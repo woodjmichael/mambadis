@@ -303,9 +303,9 @@ def simulate_outage(t_0,L):
         err.indexing()
 
 
-    #
-    # algorithm
-    #
+#
+# Algorithm
+#
 
     for i in range(L):
 
