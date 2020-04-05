@@ -356,7 +356,7 @@ def simulate_outage(t_0,L):
 ################################################################################
 
 #
-# run options
+# Run options
 #
 
 # number of iterations
