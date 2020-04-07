@@ -19,6 +19,7 @@
 #   2.1 - include gen fuel calc and tank size (not working now)
 #   2.2 - simulate_outage() works for many loops but "indexing" error, can't pre-allocate load. pv. bat. etc
 #   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
+# 3.0 - manual changes to work with FISH data, PV timeseries wrap around 12/31
 
 
 #
@@ -217,7 +218,7 @@ def create_synthetic_data():
 #
 
 def import_load_data():
-    with open('hrfireload.csv','r') as f:
+    with open('fishload.csv','r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
         t = []
@@ -228,7 +229,7 @@ def import_load_data():
             t.append(newval)
     load_all.datetime = t
 
-    my_data = np.genfromtxt('hrfireload.csv', delimiter=',')
+    my_data = np.genfromtxt('fishload.csv', delimiter=',')
     load_all.P_kw = my_data[1:,1]
 
 #
@@ -236,7 +237,7 @@ def import_load_data():
 #
 
 def import_pv_data():
-    with open('hrfiresolar.csv','r') as f:
+    with open('fishsolar.csv','r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
         t = []
@@ -245,17 +246,18 @@ def import_pv_data():
             newtxt = line[1]
             newval = dt.datetime.strptime(newtxt, '%Y-%m-%d %H:%M:%S')
             t.append(newval)
-    pv_all.datetime = t
+    pv_all.datetime = t + t
 
-    my_data = np.genfromtxt('hrfiresolar.csv', delimiter=',')
-    pv_all.P_kw = my_data[1:,-1]/1000.  # W to kW
+    my_data = np.genfromtxt('fishsolar.csv', delimiter=',')
+    pv = my_data[1:,-1]/1000.  # W to kW
     i=0
-    for row in pv_all.P_kw:
+    for row in pv:
         if row > 0:
             pass
         else:
-            pv_all.P_kw[i] = 0
+            pv[i] = 0
         i += 1
+    pv_all.P_kw = np.concatenate((pv,pv),axis=0)
 
 #
 # Simulate outage
@@ -263,29 +265,33 @@ def import_pv_data():
 
 def simulate_outage(t_0,L):
 
+    #
+    # Slice data
+    #
 
-    # slice "all load" vector into smaller "load" vector
+
+    # temporarily store small chunk "all load" vector in "load"
     m_0 = t_0 + load_all.offset2    # where in "all load" data this run will begin
     m_end = m_0 + L       # where in "all load" data this run will end
     load.P_kw = load_all.P_kw[m_0:m_end]
     load.datetime = load_all.datetime[m_0:m_end]
     if debug:
         print('LOAD')
-        print('{:d}'.format(m_0) + ' {:d}'.format(m_end))
+        print('m_0={:d}'.format(m_0) + ' m_end={:d}'.format(m_end))
         print(load.datetime[0])
         print(load.datetime[-1])
         print(load.P_kw.size)
         print(len(load.datetime))
         print('')
 
-    # slice "all pv" vector into smaller "pv" vector
+    # temporarily store small chunk "all pv" vector in "pv"
     n_0 = t_0/4 + load_all.offset      # where in "all PV" data this run will begin
     n_end = n_0 + L/4       # where in "all load" data this run will end
     pv.P_kw = pv_all.P_kw[n_0:n_end]
     pv.datetime = pv_all.datetime[n_0:n_end]
     if debug:
         print('PV')
-        print('{:d}'.format(n_0) + ' {:d}'.format(n_end))
+        print('n_0={:d}'.format(n_0) + ' n_end={:d}'.format(n_end))
         print(pv.datetime[0])
         print(pv.datetime[-1])
         print(pv.P_kw.size)
@@ -361,7 +367,7 @@ def simulate_outage(t_0,L):
 #
 
 # number of iterations
-runs = 2#350*8
+runs = 1#350*8
 
 # window start and size
 days = 14
@@ -376,17 +382,17 @@ gen_fuelA = 0.08        # gal/h/kw
 gen_fuelB = 1.5         # gal/h
 
 # data prep options
-start_at_beginning_of_load_data = 0
-start_at_Jan1_in_load_data = 1
+start_at_beginning_of_load_data = 1
+start_at_Jan1_in_load_data = 0
 
 # outputs on/off
-vectors_on = 0
+vectors_on = 1
 plots_on = 0
-debug = 0
+debug = 1
 
 
 #
-# data source
+# Data source
 #
 
 # synthetic data
@@ -395,8 +401,9 @@ debug = 0
 #load = DataClass(L)
 #create_synthetic_data()
 
-load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
-pv_all =    DataClass(60.*60., 8760)     # timestep[s], normal solar vector size
+#hr fire load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
+load_all =  DataClass(15.*60., 46333)  # timestep[s], hood river fire size
+pv_all =    DataClass(60.*60., 2*8760)     # timestep[s], normal solar vector size
 results =   DataClass(3.*60.*60., runs)
 err =   FaultClass()
 import_load_data()
@@ -419,11 +426,11 @@ elif start_at_Jan1_in_load_data:
 
 
 #
-# algorithm
+# Simulation Loop
 #
 
 for i in range(runs):
-    h=3*i                     #+58*24 # 4 Oct 2018 in load_all
+    h=3*i+90*24                    #+58*24 # 4 Oct 2018 in load_all
     t0=h*4       # where to start simulation in "all load" vector
 
     # start with fresh variables
@@ -435,7 +442,8 @@ for i in range(runs):
     bat =   BattClass(  batt_power,batt_energy,15*60.,L)      # kW, kWh, tstep[s]
     grid =  GridClass(  100.,L)                    # kW
 
-    results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
+    # hr fire results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
+    results.datetime.append(dt.datetime(2019,9,26) + dt.timedelta(hours=h))
 
     results.time_to_grid_import_h[i] = simulate_outage(t0,L)
 
