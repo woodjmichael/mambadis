@@ -1,12 +1,12 @@
-# lilcc_v2.py ver 2.2
+# lilcc_v2.py
 # mjw 2020.3.26
 # muGrid Analytics
-# python 2.7 tested
+# python 3.7.3 tested
 
 # Load Imbalance Lightweight Cycle Charging
 
 #
-# version log
+# Version log
 #
 
 # 0.0 - first attempt with synthetic data (no rev number in file)
@@ -18,10 +18,11 @@
 # 2.0 - "test_vX.py" changed to "lilcc_vX.py"
 #   2.1 - include gen fuel calc and tank size (not working now)
 #   2.2 - simulate_outage() works for many loops but "indexing" error, can't pre-allocate load. pv. bat. etc
+#   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
 
 
 #
-# issues
+# Issues
 #
 
 # 1.1 - for L=24*4 the last PV datetime does not match the last load datetime
@@ -360,7 +361,7 @@ def simulate_outage(t_0,L):
 #
 
 # number of iterations
-runs = 1#350*8
+runs = 2#350*8
 
 # window start and size
 days = 14
