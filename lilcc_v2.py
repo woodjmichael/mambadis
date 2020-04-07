@@ -20,6 +20,7 @@
 #   2.2 - simulate_outage() works for many loops but "indexing" error, can't pre-allocate load. pv. bat. etc
 #   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
 # 3.0 - manual changes to work with FISH data, PV timeseries wrap around 12/31
+#   3.1 - ** SOC_0 = 1.0 ***, load stats, tested on HR Adult Center (manual changes)
 
 
 #
@@ -54,7 +55,9 @@ class DataClass:
         me.offset2 = 0
         me.datetime = []
         me.P_kw = np.zeros((length,), dtype=float)
+        me.onlineTime = np.zeros((length,),dtype=int)
         me.time_to_grid_import_h = np.zeros((length,), dtype=float) # [h]
+
 
     def clear(me):
         me.datetime = []
@@ -116,6 +119,7 @@ class GridClass:
         me.P_kw = np.zeros((length,), dtype=float)
         me.time_to_import = 0
         me.import_on = 0
+        me.offlineCounter = 0
 
     def clear(me):
         me.P_kw.fill(0)
@@ -142,17 +146,18 @@ class GridClass:
 #
 
 class BattClass:
-    def __init__(me, Pn_kw, En_kwh, timestep, length):
+    def __init__(me, Pn_kw, En_kwh, soc0, timestep, length):
         me.Pn_kw = Pn_kw                            # pos:dischg, neg:chg
         me.En_kwh = En_kwh
-        me.soc_prev = 0.5
+        me.soc0 = soc0
+        me.soc_prev = soc0
         me.timestep = timestep                      # units of seconds
         me.P_kw = np.zeros((length,), dtype=float)
         me.soc = np.zeros((length,), dtype=float)
         me.soc_flag = 0                             # binary
 
     def clear(me):
-        me.soc_prev = 0.5
+        me.soc_prev = me.soc0
         me.P_kw.fill(0)
         me.soc.fill(0)
         me.soc_flag = 0
@@ -217,20 +222,26 @@ def create_synthetic_data():
 # Import load data
 #
 
-def import_load_data():
+def import_load_data(load_stats):
     with open('fishload.csv','r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
         t = []
         p = []
         for line in datacsv:
-            newtxt = line[0].split('P')[0][0:-1]
+            newtxt = line[0] #hr fire .split('P')[0][0:-1]
             newval = dt.datetime.strptime(newtxt, '%Y/%m/%d %H:%M')
             t.append(newval)
-    load_all.datetime = t
+    load_all.datetime = t + t
 
     my_data = np.genfromtxt('fishload.csv', delimiter=',')
-    load_all.P_kw = my_data[1:,1]
+    md = my_data[1:,1]
+    load_all.P_kw = np.concatenate((md,md),axis=0)
+
+    if load_stats:
+        print('max load [kw] = {:.1f}'.format(np.amax(load_all.P_kw)))
+        print('avg load [kw] = {:.1f}'.format(np.average(load_all.P_kw)))
+        print('min load [kw] = {:.1f}'.format(np.amin(load_all.P_kw)))
 
 #
 # Import solar vector
@@ -331,6 +342,9 @@ def simulate_outage(t_0,L):
 
         gridpower = grid.power_request(i,LSBGimbalance)
 
+        if gridpower <= 0:
+            grid.offlineCounter += 1
+
         # check energy balance
         if np.absolute(np.sum(LSimbalance - bat.P_kw[i] - gen.P_kw[i] - grid.P_kw[i])) > 0.001:
             err.energy_balance()
@@ -367,16 +381,18 @@ def simulate_outage(t_0,L):
 #
 
 # number of iterations
-runs = 1#350*8
+runs = 30*8
+skip_ahead = 0 #83*24                  # number of hours to skip ahead
 
 # window start and size
 days = 14
 L = days*24*4                     # length of simulation in timesteps
 
+
 # physical capacities
 batt_power = 50.         # kw
 batt_energy = 200.       # kwh
-gen_power = 40.           # kw
+gen_power = 50.           # kw
 gen_tank = 200.         # gal
 gen_fuelA = 0.08        # gal/h/kw
 gen_fuelB = 1.5         # gal/h
@@ -386,9 +402,11 @@ start_at_beginning_of_load_data = 1
 start_at_Jan1_in_load_data = 0
 
 # outputs on/off
-vectors_on = 1
+vectors_on = 0
 plots_on = 0
-debug = 1
+load_stats = 0
+debug = 0
+
 
 
 #
@@ -402,11 +420,11 @@ debug = 1
 #create_synthetic_data()
 
 #hr fire load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
-load_all =  DataClass(15.*60., 46333)  # timestep[s], hood river fire size
+load_all =  DataClass(15.*60., 2*46333)  # timestep[s], hood river fire size
 pv_all =    DataClass(60.*60., 2*8760)     # timestep[s], normal solar vector size
 results =   DataClass(3.*60.*60., runs)
 err =   FaultClass()
-import_load_data()
+import_load_data(load_stats)
 import_pv_data()
 
 #
@@ -422,7 +440,7 @@ if start_at_beginning_of_load_data:
 
 elif start_at_Jan1_in_load_data:
     # find the index of Jan 1 in load_all
-    load_all.offset2 = 14115
+    load_all.offset2 = 0 # starting from 9/26 in fish data 14115
 
 
 #
@@ -430,7 +448,7 @@ elif start_at_Jan1_in_load_data:
 #
 
 for i in range(runs):
-    h=3*i+90*24                    #+58*24 # 4 Oct 2018 in load_all
+    h=3*i + skip_ahead
     t0=h*4       # where to start simulation in "all load" vector
 
     # start with fresh variables
@@ -439,28 +457,31 @@ for i in range(runs):
     load =  DataClass(  15.*60.,L)                 # timestep[s]
     pv =    DataClass(  60.*60.,L)                   # timestep[s]
     gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
-    bat =   BattClass(  batt_power,batt_energy,15*60.,L)      # kW, kWh, tstep[s]
+    bat =   BattClass(  batt_power,batt_energy,1.0,15*60.,L)      # kW, kWh, soc0 tstep[s]
     grid =  GridClass(  100.,L)                    # kW
 
-    # hr fire results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
-    results.datetime.append(dt.datetime(2019,9,26) + dt.timedelta(hours=h))
+    results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
 
     results.time_to_grid_import_h[i] = simulate_outage(t0,L)
 
+    results.onlineTime[i] = grid.offlineCounter/4
+
 #
-# outputs
+# Outputs
 #
 
+i=0
+print('')
+print('outage start, time to failure [h], time online [h]')
+for i in range(runs):
+    print('{:},'.format(results.datetime[i]) + '{:06.2f},'.format(results.time_to_grid_import_h[i]) + '{:d}'.format(results.onlineTime[i]))
+
+
+print('')
 print('runs: {:d}'.format(runs))
 print('simulation period: {:d} d'.format(days))
 print('gen: {:.0f} kw'.format(gen_power) + ' {:.0f} gal'.format(gen_tank) + ' A={:.2f}'.format(gen_fuelA) + ' B={:.2f}'.format(gen_fuelB))
 print('batt: {:.0f} kw'.format(batt_power) + ' {:.0f} kwh'.format(batt_energy))
-print('')
-
-i=0
-print('outage start, backup duration [h]')
-for i in range(runs):
-    print('{:},'.format(results.datetime[i]) + '{:06.2f}'.format(results.time_to_grid_import_h[i]))
 
 # plots
 if plots_on:
@@ -499,11 +520,11 @@ if plots_on:
 
 # errors
 if err.mainloop:
+    print('')
     print('error main loop (qty {:d})'.format(err.mainloop))
-    print('')
 if err.energybalance:
+    print('')
     print('error energy balance (qty {:d})'.format(err.energybalance))
-    print('')
 if err.index:
-    print('error indexing (qty {:d})'.format(err.index))
     print('')
+    print('error indexing (qty {:d})'.format(err.index))
