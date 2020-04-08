@@ -21,6 +21,7 @@
 #   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
 # 3.0 - manual changes to work with FISH data, PV timeseries wrap around 12/31
 #   3.1 - ** SOC_0 = 1.0 ***, load stats, tested on HR Adult Center (manual changes)
+#   3.2 - now actually tested on python 3, pass sitename to load function
 
 
 #
@@ -204,7 +205,7 @@ class FaultClass:
 
 ################################################################################
 #
-# functions
+# Functions
 #
 ################################################################################
 
@@ -222,8 +223,9 @@ def create_synthetic_data():
 # Import load data
 #
 
-def import_load_data(load_stats):
-    with open('fishload.csv','r') as f:
+def import_load_data(site, load_stats):
+    filename = site + 'load.csv'
+    with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
         t = []
@@ -234,7 +236,7 @@ def import_load_data(load_stats):
             t.append(newval)
     load_all.datetime = t + t
 
-    my_data = np.genfromtxt('fishload.csv', delimiter=',')
+    my_data = np.genfromtxt(filename, delimiter=',')
     md = my_data[1:,1]
     load_all.P_kw = np.concatenate((md,md),axis=0)
 
@@ -247,8 +249,9 @@ def import_load_data(load_stats):
 # Import solar vector
 #
 
-def import_pv_data():
-    with open('fishsolar.csv','r') as f:
+def import_pv_data(site):
+    filename = site + 'solar.csv'
+    with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
         t = []
@@ -259,7 +262,7 @@ def import_pv_data():
             t.append(newval)
     pv_all.datetime = t + t
 
-    my_data = np.genfromtxt('fishsolar.csv', delimiter=',')
+    my_data = np.genfromtxt(filename, delimiter=',')
     pv = my_data[1:,-1]/1000.  # W to kW
     i=0
     for row in pv:
@@ -296,8 +299,8 @@ def simulate_outage(t_0,L):
         print('')
 
     # temporarily store small chunk "all pv" vector in "pv"
-    n_0 = t_0/4 + load_all.offset      # where in "all PV" data this run will begin
-    n_end = n_0 + L/4       # where in "all load" data this run will end
+    n_0 = t_0//4 + load_all.offset      # where in "all PV" data this run will begin
+    n_end = n_0 + L//4       # where in "all load" data this run will end
     pv.P_kw = pv_all.P_kw[n_0:n_end]
     pv.datetime = pv_all.datetime[n_0:n_end]
     if debug:
@@ -328,7 +331,7 @@ def simulate_outage(t_0,L):
     for i in range(L):
 
         # only increment i_pv every 4 i-increments
-        i_pv = i/4
+        i_pv = i//4
 
         LSimbalance = load.P_kw[i]      -   pv.P_kw[i_pv]   # load-solar imbalance
 
@@ -338,12 +341,12 @@ def simulate_outage(t_0,L):
 
         genpower = gen.power_request(i,LSBimbalance)
 
-        LSBGimbalance = LSBimbalance    -   genpower
+        LSBGimbalance = LSBimbalance    -   genpower        # etc
 
         gridpower = grid.power_request(i,LSBGimbalance)
 
         if gridpower <= 0:
-            grid.offlineCounter += 1
+            grid.offlineCounter += 1                        # time that microgrid services load
 
         # check energy balance
         if np.absolute(np.sum(LSimbalance - bat.P_kw[i] - gen.P_kw[i] - grid.P_kw[i])) > 0.001:
@@ -356,7 +359,7 @@ def simulate_outage(t_0,L):
         print('{:},'.format('time') + '{:},'.format('load') + '{:},'.format('pv') + '{:},'.format('b_kw') + '{:},'.format('b_soc') + '{:},'.format('gen') + '{:},'.format('grid') + '{:}'.format('diff'))
         for i in range(L):
             l=load.P_kw.item(i)
-            p=pv.P_kw.item(i/4)
+            p=pv.P_kw.item(i//4)
             b=bat.P_kw.item(i)
             s=bat.soc.item(i)
             g=gen.P_kw.item(i)
@@ -381,8 +384,9 @@ def simulate_outage(t_0,L):
 #
 
 # number of iterations
-runs = 30*8
-skip_ahead = 0 #83*24                  # number of hours to skip ahead
+runs = 1
+skip_ahead = 0               # number of hours to skip ahead
+site = 'hradult'                       # fish, hradult, (hrfire not working)
 
 # window start and size
 days = 14
@@ -390,10 +394,10 @@ L = days*24*4                     # length of simulation in timesteps
 
 
 # physical capacities
-batt_power = 50.         # kw
-batt_energy = 200.       # kwh
-gen_power = 50.           # kw
-gen_tank = 200.         # gal
+batt_power = 60.         # kw
+batt_energy = 120.       # kwh
+gen_power = 60.           # kw
+gen_tank = 750.         # gal
 gen_fuelA = 0.08        # gal/h/kw
 gen_fuelB = 1.5         # gal/h
 
@@ -424,8 +428,8 @@ load_all =  DataClass(15.*60., 2*46333)  # timestep[s], hood river fire size
 pv_all =    DataClass(60.*60., 2*8760)     # timestep[s], normal solar vector size
 results =   DataClass(3.*60.*60., runs)
 err =   FaultClass()
-import_load_data(load_stats)
-import_pv_data()
+import_load_data(site, load_stats)
+import_pv_data(site)
 
 #
 # some data prep
