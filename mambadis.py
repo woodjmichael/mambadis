@@ -1,9 +1,9 @@
-# lilcc_v2.py
+# mambadis.py
 # mjw 2020.3.26
 # muGrid Analytics
 # python 3.7.3 tested
 
-# Load Imbalance Lightweight Cycle Charging
+# Fast cycle-charging dispatch of PV, storage, generator migrogrids
 
 #
 # Version log
@@ -21,7 +21,8 @@
 #   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
 # 3.0 - manual changes to work with FISH data, PV timeseries wrap around 12/31
 #   3.1 - ** SOC_0 = 1.0 ***, load stats, tested on HR Adult Center (manual changes)
-#   3.2 - now actually tested on python 3, pass sitename to load function
+#   3.2 - now actually tested on python 3, pass sitename to load function, HR fire broken
+#   3.3 - rename to mambadis.py ("fast snake" dispatch)
 
 
 #

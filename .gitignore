@@ -2,14 +2,11 @@
 # Edit at https://www.gitignore.io/?templates=macos
 
 # specific to lilcc
-data.csv
-hrfireload.csv
-hrfiresolar.csv
-hrfire cycle charging analysis.numbers
-module2.vb
 old
-.csv
-.numbers
+*.vb
+*.csv
+*.numbers
+
 
 
 ### macOS ###
