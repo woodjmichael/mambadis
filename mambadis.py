@@ -388,6 +388,7 @@ def simulate_outage(t_0,L):
 
 
 
+
 ################################################################################
 #
 # "main"
@@ -401,12 +402,12 @@ def simulate_outage(t_0,L):
 
 runs = 365*8                # number of iterations
 skip_ahead = 0               # number of hours to skip ahead
-site = 'hradult'             # fish, hradult, (hrfire not working)
+site = 'fish'             # fish, hradult, (hrfire not working)
 
 # physical capacities
-batt_power = 60.         # kw
-batt_energy = 360.       # kwh
-gen_power = 60.           # kw
+batt_power = 25.         # kw
+batt_energy = 950.       # kwh
+gen_power = 0.           # kw
 gen_tank = 250.         # gal
 gen_fuelA = 0.08        # gal/h/kw
 gen_fuelB = 1.5         # gal/h
