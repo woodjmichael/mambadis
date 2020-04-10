@@ -398,21 +398,16 @@ def simulate_outage(t_0,L):
 # Run options
 #
 
-# number of iterations
-runs = 1
+
+runs = 365*8                # number of iterations
 skip_ahead = 0               # number of hours to skip ahead
-site = 'fish'                       # fish, hradult, (hrfire not working)
-
-# window start and size
-days = 14
-L = days*24*4                     # length of simulation in timesteps
-
+site = 'hradult'             # fish, hradult, (hrfire not working)
 
 # physical capacities
 batt_power = 60.         # kw
-batt_energy = 120.       # kwh
+batt_energy = 360.       # kwh
 gen_power = 60.           # kw
-gen_tank = 750.         # gal
+gen_tank = 250.         # gal
 gen_fuelA = 0.08        # gal/h/kw
 gen_fuelB = 1.5         # gal/h
 
@@ -421,6 +416,7 @@ start_at_beginning_of_load_data = 1
 start_at_Jan1_in_load_data = 0
 
 # outputs on/off
+output_file_on = 1
 vectors_on = 0
 plots_on = 0
 load_stats = 0
@@ -449,6 +445,10 @@ import_pv_data(site)
 #
 # some data prep
 #
+
+# window start and size
+days = 14
+L = days*24*4                     # length of simulation in timesteps
 
 if start_at_beginning_of_load_data:
     # find the offset between start of load data and PV data
@@ -483,24 +483,28 @@ for i in range(runs):
 
     results.time_to_grid_import_h[i] = simulate_outage(t0,L)
 
-    results.onlineTime[i] = grid.offlineCounter/4
+    results.onlineTime[i] = grid.offlineCounter/4.
 
 #
 # Outputs
 #
 
-i=0
-print('')
-print('outage start, time to failure [h], time online [h]')
-for i in range(runs):
-    print('{:},'.format(results.datetime[i]) + '{:06.2f},'.format(results.time_to_grid_import_h[i]) + '{:d}'.format(results.onlineTime[i]))
-
-
-print('')
-print('runs: {:d}'.format(runs))
-print('simulation period: {:d} d'.format(days))
-print('gen: {:.0f} kw'.format(gen_power) + ' {:.0f} gal'.format(gen_tank) + ' A={:.2f}'.format(gen_fuelA) + ' B={:.2f}'.format(gen_fuelB))
-print('batt: {:.0f} kw'.format(batt_power) + ' {:.0f} kwh'.format(batt_energy))
+if output_file_on:
+    with open('output.csv', 'w', newline='') as file:
+        output = csv.writer(file)
+        output.writerow(['Site',site])
+        output.writerow(['Runs',runs])
+        output.writerow(['Simulation period [days]',days])
+        output.writerow(['Battery power [kW]',batt_power])
+        output.writerow(['Battery energy [kWh]',batt_energy])
+        output.writerow(['Generator power [kW]',gen_power])
+        output.writerow(['Generator tank [gal]',gen_tank])
+        output.writerow(['Fuel curve A coefficient [gal/h/kW]',gen_fuelA])
+        output.writerow(['Fuel curve B coefficient [gal/h]',gen_fuelB])
+        output.writerow([])
+        output.writerow(['Run','Outage Start', 'Time to First Failure [h]', 'Cumulative Operating Time [h]'])
+        for i in range(runs):
+            output.writerow([i+1,results.datetime[i],results.time_to_grid_import_h[i],results.onlineTime[i]])
 
 # plots
 if plots_on:
@@ -547,3 +551,6 @@ if err.energybalance:
 if err.index:
     print('')
     print('error indexing (qty {:d})'.format(err.index))
+
+# ding fries are done
+print('\a')
