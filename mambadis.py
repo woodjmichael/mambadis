@@ -1,12 +1,12 @@
 # mambadis.py
 # mjw 2020.3.26
 # muGrid Analytics
-# python 3.7.3 tested
+# python 3.7
 
-# Fast cycle-charging dispatch of PV, storage, generator migrogrids
+# Fast, cycle charging dispatch of PV-battery-generator migrogrids
 
 #
-# Version log
+# Versions
 #
 
 # 0.0 - first attempt with synthetic data (no rev number in file)
@@ -24,6 +24,13 @@
 #   3.2 - now actually tested on python 3, pass sitename to load function, HR fire broken
 #   3.3 - rename to mambadis.py ("fast snake" dispatch)
 
+#
+# To Do
+#
+
+# 1 - clean up
+# 2 - csv output file
+
 
 #
 # Issues
@@ -33,10 +40,11 @@
 # 1.2 - "indexing error" for window larger than 4*24 (or so)
 # 2 - will have problem when you try to run a load window close to 12/31
 # 3 - can't pre-allocate load. pv. gen. grid. (need to allocate inside simulate loop)
+# 4 - when creating load_all object size will need to change for larger datasets
 
 ################################################################################
 #
-# modules and classes
+# Modules
 #
 ################################################################################
 
@@ -45,6 +53,12 @@ import matplotlib.pyplot as plt
 import csv
 import datetime as dt
 import time
+
+################################################################################
+#
+# Classes
+#
+################################################################################
 
 #
 # Load and Solar Data (inputs)
@@ -387,7 +401,7 @@ def simulate_outage(t_0,L):
 # number of iterations
 runs = 1
 skip_ahead = 0               # number of hours to skip ahead
-site = 'hradult'                       # fish, hradult, (hrfire not working)
+site = 'fish'                       # fish, hradult, (hrfire not working)
 
 # window start and size
 days = 14
@@ -425,8 +439,8 @@ debug = 0
 #create_synthetic_data()
 
 #hr fire load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
-load_all =  DataClass(15.*60., 2*46333)  # timestep[s], hood river fire size
-pv_all =    DataClass(60.*60., 2*8760)     # timestep[s], normal solar vector size
+load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
+pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
 results =   DataClass(3.*60.*60., runs)
 err =   FaultClass()
 import_load_data(site, load_stats)
