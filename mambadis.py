@@ -23,6 +23,9 @@
 #   3.1 - ** SOC_0 = 1.0 ***, load stats, tested on HR Adult Center (manual changes)
 #   3.2 - now actually tested on python 3, pass sitename to load function, HR fire broken
 #   3.3 - rename to mambadis.py ("fast snake" dispatch)
+#   3.4 - ** run from command line **, output to csv filename
+#   3.5 - measure runtime, command line run options overwrite defaults
+#   3.6 - simplify offsets, fuel curve lookup table, some small things
 
 
 ################################################################################
@@ -50,9 +53,8 @@ import time
 
 class DataClass:
     def __init__(me, tstep, length):
-        me.timestep = tstep                             # units of seconds
-        me.offset = 0
-        me.offset2 = 0
+        me.timestep = tstep              # units of seconds
+        me.offset = 0                    # in case load and pv data don't begin at same time
         me.datetime = []
         me.P_kw = np.zeros((length,), dtype=float)
         me.onlineTime = np.zeros((length,),dtype=int)
@@ -193,6 +195,23 @@ class FaultClass:
         me.mainloop = 0
         me.energybalance = 0
         me.index = 0
+        me.fuelCurveCoeffs = 0
+
+    def print_faults(me):
+
+        #print("\033[1;31;40m Bright Green  \n")
+        if err.mainloop:
+            print('')
+            print('\033[1;31;1m error main loop (qty {:d})'.format(err.mainloop))
+        if err.energybalance:
+            print('')
+            print('\033[1;31;1m error energy balance (qty {:d})'.format(err.energybalance))
+        if err.index:
+            print('')
+            print('\033[1;31;1m error indexing (qty {:d})'.format(err.index))
+        if err.fuelCurveCoeffs:
+            print('')
+            print('\033[1;31;1m error fuel curve coeffs (qty {:d})'.format(err.fuelCurveCoeffs))
 
     def main_loop(me):
         me.mainloop += 1
@@ -203,11 +222,56 @@ class FaultClass:
     def indexing(me):
         me.index += 1
 
+    def gen_fuel_coeffs(me):
+        me.fuelCurveCoeffs = 1
+
+
 ################################################################################
 #
 # Functions
 #
 ################################################################################
+
+#
+# Find load-pv data offset
+#
+
+# find the offset between start of load data and PV data
+def find_load_pv_offset():
+    Load_start_of_data = load_all.datetime[0]
+    Load_start_of_data_doy = Load_start_of_data.timetuple().tm_yday     # day of year
+    Load_start_of_data_hoy = (Load_start_of_data_doy-1)*24 + Load_start_of_data.hour    # hour of year
+    pv_all.offset = Load_start_of_data_hoy
+
+#
+# Fuel curve coefficients
+#
+
+def lookup_fuel_curve_coeffs(power):
+    if power < 25:
+        fuelA = 0.06
+        fuelB = 0.3
+    elif power < 35:
+        fuelA = 0.067
+        fuelB = 1.23
+    elif power < 50:
+        fuelA = 0.8
+        fuelB = 1.52
+    elif power < 67:
+        fuelA = 0.067
+        fuelB = 1.73
+    elif power < 87:
+        fuelA = 0.071
+        fuelB = 2.33
+    elif power < 120:
+        fuelA = 0.064
+        fuelB = 2.54
+    else:
+        fuelA = 0.064
+        fuelB = 2.54
+        err.gen_fuel_coeffs()
+    return [fuelA, fuelB]
+
 
 #
 # Synthetic data creation
@@ -285,10 +349,16 @@ def simulate_outage(t_0,L):
 
 
     # temporarily store small chunk "all load" vector in "load"
-    m_0 = t_0 + load_all.offset2    # where in "all load" data this run will begin
-    m_end = m_0 + L       # where in "all load" data this run will end
+
+    # where in "all load" data this run will begin
+    m_0 = t_0 + load_all.offset    # offset usually 0
+
+    # where in "all load" data this run will end
+    m_end = m_0 + L
+
     load.P_kw = load_all.P_kw[m_0:m_end]
     load.datetime = load_all.datetime[m_0:m_end]
+
     if debug:
         print('LOAD')
         print('m_0={:d}'.format(m_0) + ' m_end={:d}'.format(m_end))
@@ -299,10 +369,16 @@ def simulate_outage(t_0,L):
         print('')
 
     # temporarily store small chunk "all pv" vector in "pv"
-    n_0 = t_0//4 + load_all.offset      # where in "all PV" data this run will begin
-    n_end = n_0 + L//4       # where in "all load" data this run will end
+
+    # where in "all PV" data this run will begin
+    n_0 = t_0//4 + pv_all.offset      # offset usually 0
+
+    # where in "all load" data this run will end
+    n_end = n_0 + L//4                # offset usually 0
+
     pv.P_kw = pv_all.P_kw[n_0:n_end]
     pv.datetime = pv_all.datetime[n_0:n_end]
+
     if debug:
         print('PV')
         print('n_0={:d}'.format(n_0) + ' n_end={:d}'.format(n_end))
@@ -349,7 +425,7 @@ def simulate_outage(t_0,L):
             grid.offlineCounter += 1                        # time that microgrid services load
 
         # check energy balance
-        if np.absolute(np.sum(LSimbalance - bat.P_kw[i] - gen.P_kw[i] - grid.P_kw[i])) > 0.001:
+        if np.absolute((LSimbalance - bat.P_kw[i] - gen.P_kw[i] - grid.P_kw[i])) > 0.001:
             err.energy_balance()
 
     time_to_grid_import = grid.time_to_import/(3600./load.timestep)
@@ -368,6 +444,9 @@ def simulate_outage(t_0,L):
             print('{:d},'.format(i+1) + '{:.1f},'.format(l) + '{:.1f},'.format(p) + '{:.1f},'.format(b) + '{:.2f},'.format(s) + '{:.1f},'.format(g) + '{:.1f},'.format(G) + '{:.1f}'.format(d))
         print('')
 
+    if debug:
+        print('raw sum of batt power [kw]: {:.1f}'.format(np.sum(bat.P_kw).item(0)))
+
     return time_to_grid_import
 
 
@@ -382,6 +461,8 @@ def simulate_outage(t_0,L):
 
 t_begin = dt.datetime.now()
 
+err =   FaultClass()
+
 #
 # Run options
 #
@@ -395,12 +476,6 @@ batt_power = 25.         # kw
 batt_energy = 950.       # kwh
 gen_power = 0.           # kw
 gen_tank = 250.         # gal
-gen_fuelA = 0.08        # gal/h/kw
-gen_fuelB = 1.5         # gal/h
-
-# data prep options
-start_at_beginning_of_load_data = 1
-start_at_Jan1_in_load_data = 0
 
 # outputs on/off
 output_file_on = 1
@@ -432,11 +507,16 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-gt':
             gen_tank = float(sys.argv[i+1])
 
-        elif sys.argv[i] == '-gfa':
-            gen_fuelA = float(sys.argv[i+1])
+        elif sys.argv[i] == '-v':
+            vectors_on = 1
 
-        elif sys.argv[i] == '-gfb':
-            gen_fuelB = float(sys.argv[i+1])
+        elif sys.argv[i] == '-l':
+            load_stats = 1
+
+        elif sys.argv[i] == '-d':
+            debug = 1
+
+[gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
 
 #
 # Data source
@@ -452,7 +532,6 @@ if len(sys.argv) > 1:
 load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
 pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
 results =   DataClass(3.*60.*60., runs)
-err =   FaultClass()
 import_load_data(site, load_stats)
 import_pv_data(site)
 
@@ -463,18 +542,6 @@ import_pv_data(site)
 # window start and size
 days = 14
 L = days*24*4                     # length of simulation in timesteps
-
-if start_at_beginning_of_load_data:
-    # find the offset between start of load data and PV data
-    Load_start_of_data = load_all.datetime[0]
-    Load_start_of_data_doy = Load_start_of_data.timetuple().tm_yday     # day of year
-    Load_start_of_data_hoy = (Load_start_of_data_doy-1)*24 + Load_start_of_data.hour    # hour of year
-    load_all.offset = Load_start_of_data_hoy
-
-elif start_at_Jan1_in_load_data:
-    # find the index of Jan 1 in load_all
-    load_all.offset2 = 0 # starting from 9/26 in fish data 14115
-
 
 #
 # Simulation Loop
@@ -564,15 +631,7 @@ if plots_on:
 
 
 # errors
-if err.mainloop:
-    print('')
-    print('error main loop (qty {:d})'.format(err.mainloop))
-if err.energybalance:
-    print('')
-    print('error energy balance (qty {:d})'.format(err.energybalance))
-if err.index:
-    print('')
-    print('error indexing (qty {:d})'.format(err.index))
+err.print_faults()
 
 # ding fries are done
 print('\a')
