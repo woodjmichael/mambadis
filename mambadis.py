@@ -27,6 +27,7 @@
 #   3.5 - measure runtime, command line run options overwrite defaults
 #   3.6 - simplify offsets, fuel curve lookup table, some small things
 #   3.7 - add _nf to numpy float and _ni to numpy int array variable names, _dt to datetime variables, remove some implicit casts
+#   3.8 - can accept 15 min interval PV data (not fully tested)
 
 
 ################################################################################
@@ -61,7 +62,6 @@ class DataClass:
         me.onlineTime_h_ni = np.zeros((length,),dtype=int)
         me.time_to_grid_import_h_nf = np.zeros((length,), dtype=float) # [h]
         me.code_runtime_s = 0
-
 
     def clear(me):
         me.datetime = []
@@ -315,16 +315,27 @@ def import_load_data(site, load_stats):
 #
 
 def import_pv_data(site):
-    filename = site + 'solar.csv'
+
+    if solar_data_inverval_15min:
+        filename = site + 'solar_32040.csv'
+    else:
+        filename = site + 'solar.csv'
+
     with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
         t = []
         p = []
+
         for line in datacsv:
-            newtxt = line[1]
-            newval = dt.datetime.strptime(newtxt, '%Y-%m-%d %H:%M:%S')
+            if solar_data_inverval_15min:
+                newtxt = line[0]
+                newval = dt.datetime.strptime(newtxt, '%Y/%m/%d %H:%M')
+            else:
+                newtxt = line[1]
+                newval = dt.datetime.strptime(newtxt, '%Y-%m-%d %H:%M:%S')
             t.append(newval)
+
     pv_all.datetime = t + t
 
     my_data = np.genfromtxt(filename, delimiter=',')
@@ -371,11 +382,20 @@ def simulate_outage(t_0,L):
 
     # temporarily store small chunk "all pv" vector in "pv"
 
-    # where in "all PV" data this run will begin
-    n_0 = t_0//4 + pv_all.offset      # offset usually 0
 
-    # where in "all load" data this run will end
-    n_end = n_0 + L//4                # offset usually 0
+
+    if solar_data_inverval_15min:
+        n_0 = t_0 + pv_all.offset
+        n_end = n_0 + L
+
+    else:
+        # where in "all PV" data this run will begin
+        n_0 = t_0//4 + pv_all.offset      # offset usually 0
+
+        # where in "all load" data this run will end
+        n_end = n_0 + L//4                # offset usually 0
+
+
 
     pv.P_kw_nf = pv_all.P_kw_nf[n_0:n_end]
     pv.datetime = pv_all.datetime[n_0:n_end]
@@ -391,13 +411,13 @@ def simulate_outage(t_0,L):
 
     # check indexing
     # beginning and ending date and hour should match between load and pv
-    if (load.datetime[0].day-pv.datetime[0].day):
+    if (load.datetime[0].day    - pv.datetime[0].day):
         err.indexing()
-    if (load.datetime[-1].day-pv.datetime[-1].day):
+    if (load.datetime[-1].day   - pv.datetime[-1].day):
         err.indexing()
-    if (load.datetime[0].hour-pv.datetime[0].hour):
+    if (load.datetime[0].hour   - pv.datetime[0].hour):
         err.indexing()
-    if (load.datetime[-1].hour-pv.datetime[-1].hour):
+    if (load.datetime[-1].hour  - pv.datetime[-1].hour):
         err.indexing()
 
 
@@ -407,8 +427,11 @@ def simulate_outage(t_0,L):
 
     for i in range(L):
 
-        # only increment i_pv every 4 i-increments
-        i_pv = i//4
+        if solar_data_inverval_15min:
+            # only increment i_pv every 4 i-increments
+            i_pv = i
+        else:
+            i_pv = i//4
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
@@ -468,9 +491,10 @@ err =   FaultClass()
 # Run options
 #
 
-runs = 1#365*8                # number of iterations
-skip_ahead = 0               # number of hours to skip ahead
-site = 'fish'             # fish, hradult, (hrfire not working)
+runs = 365*8                    # number of iterations
+skip_ahead = 0                  # number of hours to skip ahead
+site = 'fish'                   # fish, hradult, (hrfire not working)
+solar_data_inverval_15min = 0
 
 # physical capacities
 batt_power = 25.         # kw
@@ -561,10 +585,13 @@ for i in range(runs):
     bat =   BattClass(  batt_power,batt_energy,1.0,15*60.,L)      # kW, kWh, soc0 tstep[s]
     grid =  GridClass(  100.,L)                    # kW
 
+    # timestamp this data point
     results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
 
+    # run the dispatch simulation
     results.time_to_grid_import_h_nf[i] = simulate_outage(t0,L)
 
+    # calculate one last result
     results.onlineTime_h_ni[i] = grid.offlineCounter/4.
 
 t_end_dt = dt.datetime.now()
