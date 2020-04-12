@@ -24,23 +24,6 @@
 #   3.2 - now actually tested on python 3, pass sitename to load function, HR fire broken
 #   3.3 - rename to mambadis.py ("fast snake" dispatch)
 
-#
-# To Do
-#
-
-# 1 - clean up
-# 2 - csv output file
-
-
-#
-# Issues
-#
-
-# 1.1 - for L=24*4 the last PV datetime does not match the last load datetime
-# 1.2 - "indexing error" for window larger than 4*24 (or so)
-# 2 - will have problem when you try to run a load window close to 12/31
-# 3 - can't pre-allocate load. pv. gen. grid. (need to allocate inside simulate loop)
-# 4 - when creating load_all object size will need to change for larger datasets
 
 ################################################################################
 #
@@ -48,6 +31,7 @@
 #
 ################################################################################
 
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import csv
@@ -73,6 +57,7 @@ class DataClass:
         me.P_kw = np.zeros((length,), dtype=float)
         me.onlineTime = np.zeros((length,),dtype=int)
         me.time_to_grid_import_h = np.zeros((length,), dtype=float) # [h]
+        me.code_runtime_s = 0
 
 
     def clear(me):
@@ -395,12 +380,13 @@ def simulate_outage(t_0,L):
 #
 ################################################################################
 
+t_begin = dt.datetime.now()
+
 #
 # Run options
 #
 
-
-runs = 365*8                # number of iterations
+runs = 1#365*8                # number of iterations
 skip_ahead = 0               # number of hours to skip ahead
 site = 'fish'             # fish, hradult, (hrfire not working)
 
@@ -423,7 +409,34 @@ plots_on = 0
 load_stats = 0
 debug = 0
 
+# command line run options
+if len(sys.argv) > 1:
 
+    for i in range(1, len(sys.argv)):
+
+        if sys.argv[i] == '-s':
+            site = str(sys.argv[i+1])
+
+        elif sys.argv[i] == '-r':
+            runs = int(sys.argv[i+1])
+
+        elif sys.argv[i] == '-bp':
+            batt_power = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-be':
+            batt_energy = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-gp':
+            gen_power = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-gt':
+            gen_tank = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-gfa':
+            gen_fuelA = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-gfb':
+            gen_fuelB = float(sys.argv[i+1])
 
 #
 # Data source
@@ -486,6 +499,12 @@ for i in range(runs):
 
     results.onlineTime[i] = grid.offlineCounter/4.
 
+t_end = dt.datetime.now()
+t_elapsed = t_end - t_begin
+results.code_runtime_s = t_elapsed.total_seconds()
+
+
+
 #
 # Outputs
 #
@@ -493,6 +512,8 @@ for i in range(runs):
 if output_file_on:
     with open('output.csv', 'w', newline='') as file:
         output = csv.writer(file)
+        output.writerow(['Datetime',dt.datetime.now()])
+        output.writerow(['Runtime [s]',results.code_runtime_s])
         output.writerow(['Site',site])
         output.writerow(['Runs',runs])
         output.writerow(['Simulation period [days]',days])
