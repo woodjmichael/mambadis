@@ -28,6 +28,7 @@
 #   3.6 - simplify offsets, fuel curve lookup table, some small things
 #   3.7 - add _nf to numpy float and _ni to numpy int array variable names, _dt to datetime variables, remove some implicit casts
 #   3.8 - can accept 15 min interval PV data (not fully tested)
+#   3.9 - PV 15min interval data filename
 
 
 ################################################################################
@@ -317,7 +318,7 @@ def import_load_data(site, load_stats):
 def import_pv_data(site):
 
     if solar_data_inverval_15min:
-        filename = site + 'solar_32040.csv'
+        filename = site + 'solar_35040.csv'
     else:
         filename = site + 'solar.csv'
 
@@ -491,16 +492,16 @@ err =   FaultClass()
 # Run options
 #
 
-runs = 365*8                    # number of iterations
+runs = 1#365*8                  # number of iterations
 skip_ahead = 0                  # number of hours to skip ahead
 site = 'fish'                   # fish, hradult, (hrfire not working)
-solar_data_inverval_15min = 0
+solar_data_inverval_15min = 1
 
 # physical capacities
 batt_power = 25.         # kw
 batt_energy = 950.       # kwh
 gen_power = 0.           # kw
-gen_tank = 250.         # gal
+gen_tank = 250.          # gal
 
 # outputs on/off
 output_file_on = 1
