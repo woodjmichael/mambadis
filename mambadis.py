@@ -30,6 +30,7 @@
 #   3.8 - can accept 15 min interval PV data (not fully tested)
 #   3.9 - ** PV 15 min interval data tested **, new filename
 #   3.10 - simulation dispatch vector now output to csv
+#   3.11 - fix bug where simulation dispatch vector showed wrong P_pv
 
 
 ################################################################################
@@ -76,7 +77,7 @@ class DataClass:
 
 class GenClass:
     def __init__(me, Pn_kw, a, b, tankCap, tstep, length):
-        me.timestep = tstep                             # units of seconds
+        me.timestep = tstep                             # [s]
         me.dpph = 3600./tstep
         me.tstepHr = tstep/3600.
         me.Pn_kw = Pn_kw
@@ -431,7 +432,15 @@ def simulate_outage(t_0,L):
 
         genpower = gen.power_request(i,LSBimbalance)
 
-        LSBGimbalance = LSBimbalance    -   genpower        # etc
+
+#        if (genpower > 0 ) & (genpower < gen.Pn_kw/2):
+#            genpower = gen.power_request(i,gen.Pn_kw)
+#            LSGimbalance = LSimbalance - genpower
+#            battpower = bat.power_request(i,LSGimbalance)
+#            LSBimbalance = LSimbalance - battpower
+#            genpower = gen.power_request(i,LSBimbalance)
+
+        LSBGimbalance = LSBimbalance    -   genpower        # load-solar-batt-gen imbalance
 
         gridpower = grid.power_request(i,LSBGimbalance)
 
@@ -450,8 +459,12 @@ def simulate_outage(t_0,L):
             output = csv.writer(file)
             output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
             for i in range(L):
+                if solar_data_inverval_15min:
+                    i_pv = i
+                else:
+                    i_pv = i//4 # only increment i_pv every 4 i-increments
                 l=load.P_kw_nf.item(i)
-                p=pv.P_kw_nf.item(i//4)
+                p=pv.P_kw_nf.item(i_pv)
                 b=bat.P_kw_nf.item(i)
                 s=bat.soc_nf.item(i)
                 g=gen.P_kw_nf.item(i)
@@ -474,7 +487,7 @@ def simulate_outage(t_0,L):
 #
 ################################################################################
 
-t_begin_dt = dt.datetime.now()
+t_script_begin_dt = dt.datetime.now()
 
 err =   FaultClass()
 
@@ -566,7 +579,7 @@ L = days*24*4                     # length of simulation in timesteps
 for i in range(runs):
     h=3*i + skip_ahead
     t0=h*4       # where to start simulation in "all load" vector
-
+    
     # start with fresh variables
     # wish we could pre-allocate these, but it was causing a bug
     #   even after calling .clear() on everything
@@ -585,8 +598,8 @@ for i in range(runs):
     # calculate one last result
     results.onlineTime_h_ni[i] = grid.offlineCounter/4.
 
-t_end_dt = dt.datetime.now()
-t_elapsed_dt = t_end_dt - t_begin_dt
+t_script_finished_dt = dt.datetime.now()
+t_elapsed_dt = t_script_finished_dt - t_script_begin_dt
 results.code_runtime_s = t_elapsed_dt.total_seconds()
 
 
