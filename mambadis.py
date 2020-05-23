@@ -32,6 +32,7 @@
 #   3.10 - simulation dispatch vector now output to csv
 #   3.11 - fix bug where simulation dispatch vector showed wrong P_pv
 # 4.0 - real CC dispatch including min on/off time, nonzero batt efficiency, need to clean up algo & "grid" aspect
+#   4.1 - change dispatch when gen tank is empty
 
 ################################################################################
 #
@@ -146,6 +147,9 @@ class GenClass:
     def cool_down_complete(me):
         ret = me.off_time >=  me.min_off_time
         return ret
+
+    def tank_empty(me):
+        return  (me.fuelTankCapacity - me.fuelConsumed) < 0.001
 
 
 #
@@ -462,7 +466,7 @@ def simulate_outage(t_0,L):
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
-        if not chg:
+        if not chg and not gen.tank_empty():
 
             battpower = bat.power_request(i,LSimbalance)
 
@@ -477,7 +481,7 @@ def simulate_outage(t_0,L):
                 genpower = gen.power_request(i,LSBimbalance)
                 chg = 1
 
-        if chg:
+        if chg and not gen.tank_empty():
 
             LSGimbalance = LSimbalance - gen.Pn_kw
             battpower = bat.power_request(i,LSGimbalance)
@@ -490,7 +494,11 @@ def simulate_outage(t_0,L):
                 genpower = gen.power_request(i,LSBimbalance)
                 chg = 0
 
-
+        if gen.tank_empty():
+            chg = 0
+            battpower = bat.power_request(i,LSimbalance)
+            LSBimbalance = LSimbalance - battpower
+            genpower = gen.power_request(i,0)
 
         LSBGimbalance = LSBimbalance    -   genpower        # load-solar-batt-gen imbalance
 
@@ -548,7 +556,7 @@ err =   FaultClass()
 # Run options
 #
 
-runs = 1#365*8                  # number of iterations
+runs = 365*8                  # number of iterations
 skip_ahead = 0                  # number of hours to skip ahead
 site = 'fish'                   # fish, hradult, (hrfire not working)
 solar_data_inverval_15min = 1
