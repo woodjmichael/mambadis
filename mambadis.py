@@ -28,7 +28,8 @@
 #   3.6 - simplify offsets, fuel curve lookup table, some small things
 #   3.7 - add _nf to numpy float and _ni to numpy int array variable names, _dt to datetime variables, remove some implicit casts
 #   3.8 - can accept 15 min interval PV data (not fully tested)
-#   3.9 - PV 15min interval data filename
+#   3.9 - ** PV 15 min interval data tested **, new filename
+#   3.10 - simulation dispatch vector now output to csv
 
 
 ################################################################################
@@ -250,29 +251,17 @@ def find_load_pv_offset():
 #
 
 def lookup_fuel_curve_coeffs(power):
-    if power < 25:
-        fuelA = 0.06
-        fuelB = 0.3
-    elif power < 35:
-        fuelA = 0.067
-        fuelB = 1.23
-    elif power < 50:
-        fuelA = 0.8
-        fuelB = 1.52
-    elif power < 67:
-        fuelA = 0.067
-        fuelB = 1.73
-    elif power < 87:
-        fuelA = 0.071
-        fuelB = 2.33
-    elif power < 120:
-        fuelA = 0.064
-        fuelB = 2.54
+    # coeffs = [fuel_curve_coeff_A, fuel_curve_coeff_B]
+    if power < 25:      coeffs = [0.06 , 0.3]
+    elif power < 35:    coeffs = [0.067, 1.23]
+    elif power < 50:    coeffs = [0.8, 1.52]
+    elif power < 67:    coeffs = [0.067, 1.73]
+    elif power < 87:    coeffs = [0.071, 2.33]
+    elif power < 120:   coeffs = [0.064, 2.54]
     else:
-        fuelA = 0.064
-        fuelB = 2.54
+        coeffs = [0.064, 2.54]
         err.gen_fuel_coeffs()
-    return [fuelA, fuelB]
+    return coeffs
 
 
 #
@@ -457,17 +446,18 @@ def simulate_outage(t_0,L):
 
     # vectors
     if vectors_on:
-        print('{:},'.format('time') + '{:},'.format('load') + '{:},'.format('pv') + '{:},'.format('b_kw') + '{:},'.format('b_soc') + '{:},'.format('gen') + '{:},'.format('grid') + '{:}'.format('diff'))
-        for i in range(L):
-            l=load.P_kw_nf.item(i)
-            p=pv.P_kw_nf.item(i//4)
-            b=bat.P_kw_nf.item(i)
-            s=bat.soc_nf.item(i)
-            g=gen.P_kw_nf.item(i)
-            G=grid.P_kw_nf.item(i)
-            d=l-p-b-g-G
-            print('{:d},'.format(i+1) + '{:.1f},'.format(l) + '{:.1f},'.format(p) + '{:.1f},'.format(b) + '{:.2f},'.format(s) + '{:.1f},'.format(g) + '{:.1f},'.format(G) + '{:.1f}'.format(d))
-        print('')
+        with open('vectors.csv', 'w', newline='') as file:
+            output = csv.writer(file)
+            output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
+            for i in range(L):
+                l=load.P_kw_nf.item(i)
+                p=pv.P_kw_nf.item(i//4)
+                b=bat.P_kw_nf.item(i)
+                s=bat.soc_nf.item(i)
+                g=gen.P_kw_nf.item(i)
+                G=grid.P_kw_nf.item(i)
+                d=l-p-b-g-G
+                output.writerow([i+1,l,p,b,s,g,G,d])
 
     if debug:
         print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
