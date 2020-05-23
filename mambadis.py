@@ -31,7 +31,7 @@
 #   3.9 - ** PV 15 min interval data tested **, new filename
 #   3.10 - simulation dispatch vector now output to csv
 #   3.11 - fix bug where simulation dispatch vector showed wrong P_pv
-
+# 4.0 - real CC dispatch including min on/off time, nonzero batt efficiency, need to clean up algo & "grid" aspect
 
 ################################################################################
 #
@@ -87,6 +87,11 @@ class GenClass:
         me.fuelTankCapacity = tankCap                   # [gal]
         me.P_kw_nf = np.zeros((length,), dtype=float)
         me.fuelConsumed = 0                              # [gal]
+        me.min_on_time = 4                              # [timesteps]
+        me.min_off_time = 4                             # [timesteps]
+        me.on_time = me.min_on_time
+        me.off_time = me.min_off_time
+        me.prev_power = 0
 
     def clear(me):
         me.P_kw_nf.fill(0)
@@ -94,12 +99,16 @@ class GenClass:
 
 
     def power_request(me, i, p_req):
-        if p_req > 0:
+        if (p_req > 0) & (p_req < 0.001):
+            p_req = 0
+        
+        if (p_req > 0) & me.cool_down_complete():
             p_final = min(p_req,  me.Pn_kw, me.Pmax_tank())
-        elif p_req < 0:
+        elif (p_req == 0) & me.warm_up_complete():
             p_final = 0.
         else:
             p_final = 0.
+        me.on_off_counter(p_final)
         me.P_kw_nf[i] = np.array([p_final])
         me.fuel_calc(p_final)
         return p_final
@@ -116,6 +125,29 @@ class GenClass:
         if power:
             fuel_delta = (power*me.fuelcurve_Acoeff + me.fuelcurve_Bcoeff)*me.tstepHr
             me.fuelConsumed += fuel_delta
+
+    def on_off_counter(me, now_power):
+        if me.prev_power:
+            if now_power:
+                if (me.on_time < me.min_on_time): me.on_time = me.on_time + 1
+            else:
+                me.off_time = 1
+        else:
+            if now_power:
+                me.on_time = 1
+            else:
+                if (me.off_time < me.min_off_time): me.off_time = me.off_time + 1
+        me.prev_power = now_power
+
+    def warm_up_complete(me):
+        ret = me.on_time >=  me.min_on_time
+        return ret
+
+    def cool_down_complete(me):
+        ret = me.off_time >=  me.min_off_time
+        return ret
+
+
 #
 # Grid
 #
@@ -162,6 +194,7 @@ class BattClass:
         me.P_kw_nf = np.zeros((length,), dtype=float)
         me.soc_nf = np.zeros((length,), dtype=float)
         me.soc_flag = 0                             # binary
+        me.rt_eff = 0.9
 
     def clear(me):
         me.soc_prev = me.soc0
@@ -181,7 +214,7 @@ class BattClass:
         return p_final
 
     def soc_update(me,powerkw):
-        soc_new = me.soc_prev - (powerkw * me.timestep/3600.0)/me.En_kwh
+        soc_new = me.soc_prev - (powerkw * me.timestep/3600.0 * me.rt_eff)/me.En_kwh
         me.soc_prev = soc_new
         return soc_new
 
@@ -416,6 +449,9 @@ def simulate_outage(t_0,L):
 # Algorithm
 #
 
+    chg = 0
+
+
     for i in range(L):
 
         if solar_data_inverval_15min:
@@ -426,23 +462,40 @@ def simulate_outage(t_0,L):
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
-        battpower = bat.power_request(i,LSimbalance)
+        if not chg:
 
-        LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
+            battpower = bat.power_request(i,LSimbalance)
 
-        genpower = gen.power_request(i,LSBimbalance)
+            LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
+
+            genpower = gen.power_request(i,LSBimbalance)
+
+            if bat.soc_prev < 0.001:
+                LSGimbalance = LSimbalance - gen.Pn_kw
+                battpower = bat.power_request(i,LSGimbalance)
+                LSBimbalance = LSimbalance - battpower
+                genpower = gen.power_request(i,LSBimbalance)
+                chg = 1
+
+        if chg:
+
+            LSGimbalance = LSimbalance - gen.Pn_kw
+            battpower = bat.power_request(i,LSGimbalance)
+            LSBimbalance = LSimbalance - battpower
+            genpower = gen.power_request(i,LSBimbalance)
+
+            if (bat.soc_prev == 1) or ((bat.soc_prev > 0.5) and (pv.P_kw_nf[i_pv] > 0)):
+                battpower = bat.power_request(i,LSimbalance)
+                LSBimbalance = LSimbalance - battpower
+                genpower = gen.power_request(i,LSBimbalance)
+                chg = 0
 
 
-#        if (genpower > 0 ) & (genpower < gen.Pn_kw/2):
-#            genpower = gen.power_request(i,gen.Pn_kw)
-#            LSGimbalance = LSimbalance - genpower
-#            battpower = bat.power_request(i,LSGimbalance)
-#            LSBimbalance = LSimbalance - battpower
-#            genpower = gen.power_request(i,LSBimbalance)
 
         LSBGimbalance = LSBimbalance    -   genpower        # load-solar-batt-gen imbalance
 
         gridpower = grid.power_request(i,LSBGimbalance)
+
 
         if gridpower <= 0:
             grid.offlineCounter += 1                        # time that microgrid services load
