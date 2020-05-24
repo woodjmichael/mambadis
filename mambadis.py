@@ -33,6 +33,7 @@
 #   3.11 - fix bug where simulation dispatch vector showed wrong P_pv
 # 4.0 - real CC dispatch including min on/off time, nonzero batt efficiency, need to clean up algo & "grid" aspect
 #   4.1 - change dispatch when gen tank is empty
+#   4.2 - min on/off time was causing early microgrid failures
 
 ################################################################################
 #
@@ -88,8 +89,8 @@ class GenClass:
         me.fuelTankCapacity = tankCap                   # [gal]
         me.P_kw_nf = np.zeros((length,), dtype=float)
         me.fuelConsumed = 0                              # [gal]
-        me.min_on_time = 4                              # [timesteps]
-        me.min_off_time = 4                             # [timesteps]
+        me.min_on_time = 1                              # [timesteps]
+        me.min_off_time = 1                             # [timesteps]
         me.on_time = me.min_on_time
         me.off_time = me.min_off_time
         me.prev_power = 0
@@ -509,7 +510,7 @@ def simulate_outage(t_0,L):
             grid.offlineCounter += 1                        # time that microgrid services load
 
         # check energy balance
-        if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf[i])) > 0.001:
+        if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
             err.energy_balance()
 
     time_to_grid_import = grid.time_to_import/(3600./load.timestep)
@@ -544,7 +545,7 @@ def simulate_outage(t_0,L):
 
 ################################################################################
 #
-# "main"
+# Main
 #
 ################################################################################
 
@@ -559,7 +560,7 @@ err =   FaultClass()
 runs = 365*8                  # number of iterations
 skip_ahead = 0                  # number of hours to skip ahead
 site = 'fish'                   # fish, hradult, (hrfire not working)
-solar_data_inverval_15min = 1
+solar_data_inverval_15min = 0
 
 # physical capacities
 batt_power = 25.         # kw
