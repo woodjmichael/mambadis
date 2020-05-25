@@ -34,6 +34,7 @@
 # 4.0 - real CC dispatch including min on/off time, nonzero batt efficiency, need to clean up algo & "grid" aspect
 #   4.1 - change dispatch when gen tank is empty
 #   4.2 - min on/off time was causing early microgrid failures
+#   4.3 - help
 
 ################################################################################
 #
@@ -539,7 +540,29 @@ def simulate_outage(t_0,L):
 
     return time_to_grid_import
 
+#
+# Print help 
+#
 
+def printout_help():
+    print('\nmambadis.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
+    print('')
+    print('Arguments can be included in any order, but values must follow directly after keys')
+    print('e.g. % python mambadis.py -s fish -bp 20 be 40 .. (etc)')
+    print('')
+    print('Required Command Line Arguments')
+    print(' Site name:              -s [sitename]       e.g. -s hradult')
+    print(' Battery power:          -bp [power kW]      e.g. -bp 60')
+    print(' Battery energy:         -be [energy kWh]    e.g. -be 120') 
+    print(' Generator power:        -gp [power kW]      e.g. -gp 60')
+    print(' Generator tank:         -gt [size gal]      e.g. -gt 200')
+    print('')
+    print('Optional Command Line Arguments')
+    print(' Simulation runs:         -r [runs]          e.g. -r 1   default=2920')
+    print(' Dispatch vectors ON:     -v                 e.g. -v     default=OFF')
+    print(' Load stats ON:           -l                 e.g. -l     default=OFF')
+    print(' Debug ON:                -d                 e.g. -d     default=OFF')
+    print('')
 
 
 
@@ -560,7 +583,7 @@ err =   FaultClass()
 runs = 365*8                  # number of iterations
 skip_ahead = 0                  # number of hours to skip ahead
 site = 'fish'                   # fish, hradult, (hrfire not working)
-solar_data_inverval_15min = 0
+solar_data_inverval_15min = 1
 
 # physical capacities
 batt_power = 25.         # kw
@@ -606,6 +629,10 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-d':
             debug = 1
+        
+        elif sys.argv[i] == '-h' or '--help':
+            printout_help()
+            quit()
 
 [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
 
