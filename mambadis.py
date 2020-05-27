@@ -35,6 +35,7 @@
 #   4.1 - change dispatch when gen tank is empty
 #   4.2 - min on/off time was causing early microgrid failures
 #   4.3 - help
+#   4.4 - help is broken (removed), add pv scaling factor 
 
 ################################################################################
 #
@@ -370,6 +371,7 @@ def import_pv_data(site):
 
     my_data = np.genfromtxt(filename, delimiter=',')
     pv = my_data[1:,-1]/1000.  # W to kW
+
     i=0
     for row in pv:
         if row > 0:
@@ -377,7 +379,9 @@ def import_pv_data(site):
         else:
             pv[i] = 0
         i += 1
+    
     pv_all.P_kw_nf = np.concatenate((pv,pv),axis=0)
+    pv_all.P_kw_nf = pv_scaling_factor * pv_all.P_kw_nf
 
 #
 # Simulate outage
@@ -586,10 +590,10 @@ site = 'fish'                   # fish, hradult, (hrfire not working)
 solar_data_inverval_15min = 1
 
 # physical capacities
-batt_power = 25.         # kw
-batt_energy = 950.       # kwh
-gen_power = 0.           # kw
-gen_tank = 250.          # gal
+batt_power = 30.         # kw
+batt_energy = 60.       # kwh
+gen_power = 30.           # kw
+gen_tank = 200.          # gal
 
 # outputs on/off
 output_file_on = 1
@@ -598,6 +602,9 @@ plots_on = 0
 load_stats = 0
 debug = 0
 
+# pv scaling
+pv_scaling_factor = 1
+
 # command line run options
 if len(sys.argv) > 1:
 
@@ -605,6 +612,9 @@ if len(sys.argv) > 1:
 
         if sys.argv[i] == '-s':
             site = str(sys.argv[i+1])
+
+        elif sys.argv[i] == '-p':
+            pv_scaling_factor = float(sys.argv[i+1])
 
         elif sys.argv[i] == '-r':
             runs = int(sys.argv[i+1])
@@ -629,11 +639,11 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-d':
             debug = 1
-        
+'''        
         elif sys.argv[i] == '-h' or '--help':
             printout_help()
             quit()
-
+'''
 [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
 
 #
