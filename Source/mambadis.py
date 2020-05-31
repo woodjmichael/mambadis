@@ -36,6 +36,7 @@
 #   4.2 - min on/off time was causing early microgrid failures
 #   4.3 - help
 #   4.4 - help is broken (removed), add pv scaling factor 
+#   4.5 - fixed help, -sk skip ahead arg, new folder organization, new filenames for clarity
 
 ################################################################################
 #
@@ -45,7 +46,7 @@
 
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import csv
 import datetime as dt
 import time
@@ -320,7 +321,7 @@ def create_synthetic_data():
 #
 
 def import_load_data(site, load_stats):
-    filename = site + 'load.csv'
+    filename = '../Data/Load/' + site + '_load.csv'
     with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
@@ -348,9 +349,9 @@ def import_load_data(site, load_stats):
 def import_pv_data(site):
 
     if solar_data_inverval_15min:
-        filename = site + 'solar_35040.csv'
+        filename = '../Data/Solar/' + site + '_solar_35040.csv'
     else:
-        filename = site + 'solar.csv'
+        filename = '../Data/Solar/' + site + '_solar.csv'
 
     with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
@@ -522,7 +523,7 @@ def simulate_outage(t_0,L):
 
     # vectors
     if vectors_on:
-        with open('vectors.csv', 'w', newline='') as file:
+        with open('../Data/Output/vectors.csv', 'w', newline='') as file:
             output = csv.writer(file)
             output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
             for i in range(L):
@@ -548,7 +549,7 @@ def simulate_outage(t_0,L):
 # Print help 
 #
 
-def printout_help():
+def help_printout():
     print('\nmambadis.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
     print('')
     print('Arguments can be included in any order, but values must follow directly after keys')
@@ -562,10 +563,11 @@ def printout_help():
     print(' Generator tank:         -gt [size gal]      e.g. -gt 200')
     print('')
     print('Optional Command Line Arguments')
-    print(' Simulation runs:         -r [runs]          e.g. -r 1   default=2920')
+    print(' Run "n" simulations:     -r [n]             e.g. -r 1   default=2920')
     print(' Dispatch vectors ON:     -v                 e.g. -v     default=OFF')
     print(' Load stats ON:           -l                 e.g. -l     default=OFF')
     print(' Debug ON:                -d                 e.g. -d     default=OFF')
+    print(' Skip ahead "h" hours:    -sk [h]            e.g. -sk 24 default=OFF')
     print('')
 
 
@@ -639,11 +641,14 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-d':
             debug = 1
-'''        
-        elif sys.argv[i] == '-h' or '--help':
-            printout_help()
+
+        elif sys.argv[i] == '-sk':
+            skip_ahead = int(sys.argv[i+1])
+        
+        elif sys.argv[i] == '--help' :
+            help_printout()
             quit()
-'''
+
 [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
 
 #
@@ -708,7 +713,7 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 #
 
 if output_file_on:
-    with open('output.csv', 'w', newline='') as file:
+    with open('../Data/Output/output.csv', 'w', newline='') as file:
         output = csv.writer(file)
         output.writerow(['Datetime',dt.datetime.now()])
         output.writerow(['Runtime [s]',results.code_runtime_s])
