@@ -39,7 +39,7 @@
 #   4.5 - fixed help, -sk skip ahead arg, new folder organization, new filenames for clarity
 #   4.6 - keep mambadis.py in main dir, output resilience conf and ttff
 # 5.0 - superloop runs a matrix of battery energy and PV scale (oversize) factors, output and superloop files 
-
+#   5.1 - bug where superloop output fails
 ################################################################################
 #
 # Modules
@@ -658,8 +658,8 @@ if len(sys.argv) > 1:
             quit()
 
 if superloop_enabled:
-    pv_scale_vector = [1,1.25,1.5,1.75,2]
-    batt_energy_vector = [250,500,750,1000]
+    pv_scale_vector = [1,1.25]#,1.5,1.75,2]
+    batt_energy_vector = [250,500]#,750,1000]
 else:
     pv_scale_vector = [pv_scaling_factor]
     batt_energy_vector = [batt_energy]
@@ -756,7 +756,7 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 # Outputs
 #
 
-if superloop_file_on:
+if superloop_enabled:
     with open('./Data/Output/superloop.csv', 'w', newline='') as file:
         output = csv.writer(file)
         output.writerow(['Datetime',dt.datetime.now()])
