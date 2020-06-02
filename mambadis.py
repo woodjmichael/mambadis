@@ -37,6 +37,7 @@
 #   4.3 - help
 #   4.4 - help is broken (removed), add pv scaling factor 
 #   4.5 - fixed help, -sk skip ahead arg, new folder organization, new filenames for clarity
+#   4.6 - keep mambadis.py in main dir, output resilience conf and ttff
 
 ################################################################################
 #
@@ -321,7 +322,7 @@ def create_synthetic_data():
 #
 
 def import_load_data(site, load_stats):
-    filename = '../Data/Load/' + site + '_load.csv'
+    filename = './Data/Load/' + site + '_load.csv'
     with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
         del datacsv[0]
@@ -349,7 +350,7 @@ def import_load_data(site, load_stats):
 def import_pv_data(site):
 
     if solar_data_inverval_15min:
-        filename = '../Data/Solar/' + site + '_solar_35040.csv'
+        filename = './Data/Solar/' + site + '_solar_35040.csv'
     else:
         filename = '../Data/Solar/' + site + '_solar.csv'
 
@@ -523,7 +524,7 @@ def simulate_outage(t_0,L):
 
     # vectors
     if vectors_on:
-        with open('../Data/Output/vectors.csv', 'w', newline='') as file:
+        with open('./Data/Output/vectors.csv', 'w', newline='') as file:
             output = csv.writer(file)
             output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
             for i in range(L):
@@ -702,6 +703,17 @@ for i in range(runs):
     # calculate one last result
     results.onlineTime_h_ni[i] = grid.offlineCounter/4.
 
+# calculate some resilience metrics
+#   80% @ 1 wk, 50% @ 2 wks
+ttff  = results.time_to_grid_import_h_nf
+
+conf_168h = len(ttff[ttff >= 168])/runs 
+conf_336h = len(ttff[ttff >= 336])/runs 
+
+max_ttff = np.max(ttff)
+min_ttff = np.min(ttff)
+avg_ttff = np.average(ttff)
+
 t_script_finished_dt = dt.datetime.now()
 t_elapsed_dt = t_script_finished_dt - t_script_begin_dt
 results.code_runtime_s = t_elapsed_dt.total_seconds()
@@ -713,7 +725,7 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 #
 
 if output_file_on:
-    with open('../Data/Output/output.csv', 'w', newline='') as file:
+    with open('./Data/Output/output.csv', 'w', newline='') as file:
         output = csv.writer(file)
         output.writerow(['Datetime',dt.datetime.now()])
         output.writerow(['Runtime [s]',results.code_runtime_s])
@@ -726,6 +738,12 @@ if output_file_on:
         output.writerow(['Generator tank [gal]',gen_tank])
         output.writerow(['Fuel curve A coefficient [gal/h/kW]',gen_fuelA])
         output.writerow(['Fuel curve B coefficient [gal/h]',gen_fuelB])
+        output.writerow([])
+        output.writerow(['Confidence 168 h',conf_168h])
+        output.writerow(['Confidence 336 h',conf_336h])
+        output.writerow(['Max TTFF [h]', max_ttff])
+        output.writerow(['Avg TTFF [h]', avg_ttff])
+        output.writerow(['Min TTFF [h]', min_ttff])
         output.writerow([])
         output.writerow(['Run','Outage Start', 'Time to First Failure [h]', 'Cumulative Operating Time [h]'])
         for i in range(runs):
