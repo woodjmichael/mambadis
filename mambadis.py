@@ -38,6 +38,7 @@
 #   4.4 - help is broken (removed), add pv scaling factor 
 #   4.5 - fixed help, -sk skip ahead arg, new folder organization, new filenames for clarity
 #   4.6 - keep mambadis.py in main dir, output resilience conf and ttff
+# 5.0 - superloop runs a matrix of battery energy and PV scale (oversize) factors, output and superloop files 
 
 ################################################################################
 #
@@ -569,6 +570,7 @@ def help_printout():
     print(' Load stats ON:           -l                 e.g. -l     default=OFF')
     print(' Debug ON:                -d                 e.g. -d     default=OFF')
     print(' Skip ahead "h" hours:    -sk [h]            e.g. -sk 24 default=OFF')
+    print(' Superloop enable:        -sl                e.g. -sl    default=DISABLED')
     print('')
 
 
@@ -589,16 +591,18 @@ err =   FaultClass()
 
 runs = 365*8                  # number of iterations
 skip_ahead = 0                  # number of hours to skip ahead
-site = 'fish'                   # fish, hradult, (hrfire not working)
+site = 'hradult'                   # fish, hradult, (hrfire not working)
 solar_data_inverval_15min = 1
+superloop_enabled = 0           # run matrix of battery energy and PV scale (oversize) factors
 
 # physical capacities
-batt_power = 30.         # kw
+batt_power = 60.         # kw
 batt_energy = 60.       # kwh
-gen_power = 30.           # kw
-gen_tank = 200.          # gal
+gen_power = 60.           # kw
+gen_tank = 250.          # gal
 
 # outputs on/off
+superloop_file_on = 0
 output_file_on = 1
 vectors_on = 0
 plots_on = 0
@@ -646,92 +650,136 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-sk':
             skip_ahead = int(sys.argv[i+1])
         
+        elif sys.argv[i] == '-sl':
+            superloop_enabled = 1
+
         elif sys.argv[i] == '--help' :
             help_printout()
             quit()
 
-[gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
+if superloop_enabled:
+    pv_scale_vector = [1,1.25,1.5,1.75,2]
+    batt_energy_vector = [250,500,750,1000]
+else:
+    pv_scale_vector = [pv_scaling_factor]
+    batt_energy_vector = [batt_energy]
 
-#
-# Data source
-#
 
-# synthetic data
-#L = 72
-#pv = DataClass(L)
-#load = DataClass(L)
-#create_synthetic_data()
+pv_scale_vals= []
+batt_energy_vals = []
 
-#hr fire load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
-load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
-pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
-results =   DataClass(3.*60.*60., runs)
-import_load_data(site, load_stats)
-import_pv_data(site)
+max_ttff = []
+avg_ttff = []
+min_ttff = []
 
-#
-# some data prep
-#
+conf_168h = []
+conf_336h = []
 
-# window start and size
-days = 14
-L = days*24*4                     # length of simulation in timesteps
+for pv_scaling_factor in pv_scale_vector:
+    for batt_energy in batt_energy_vector: 
+        [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
 
-#
-# Simulation Loop
-#
+        #
+        # Data source
+        #
 
-for i in range(runs):
-    h=3*i + skip_ahead
-    t0=h*4       # where to start simulation in "all load" vector
-    
-    # start with fresh variables
-    # wish we could pre-allocate these, but it was causing a bug
-    #   even after calling .clear() on everything
-    load =  DataClass(  15.*60.,L)                 # timestep[s]
-    pv =    DataClass(  60.*60.,L)                   # timestep[s]
-    gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
-    bat =   BattClass(  batt_power,batt_energy,1.0,15*60.,L)      # kW, kWh, soc0 tstep[s]
-    grid =  GridClass(  100.,L)                    # kW
+        # synthetic data
+        #L = 72
+        #pv = DataClass(L)
+        #load = DataClass(L)
+        #create_synthetic_data()
 
-    # timestamp this data point
-    results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
+        #hr fire load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
+        load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
+        pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
+        results =   DataClass(3.*60.*60., runs)
+        import_load_data(site, load_stats)
+        import_pv_data(site)
 
-    # run the dispatch simulation
-    results.time_to_grid_import_h_nf[i] = simulate_outage(t0,L)
+        #
+        # some data prep
+        #
 
-    # calculate one last result
-    results.onlineTime_h_ni[i] = grid.offlineCounter/4.
+        # window start and size
+        days = 14
+        L = days*24*4                     # length of simulation in timesteps
 
-# calculate some resilience metrics
-#   80% @ 1 wk, 50% @ 2 wks
-ttff  = results.time_to_grid_import_h_nf
+        #
+        # Simulation Loop
+        #
 
-conf_168h = len(ttff[ttff >= 168])/runs 
-conf_336h = len(ttff[ttff >= 336])/runs 
+        for i in range(runs):
+            h=3*i + skip_ahead
+            t0=h*4       # where to start simulation in "all load" vector
+            
+            # start with fresh variables
+            # wish we could pre-allocate these, but it was causing a bug
+            #   even after calling .clear() on everything
+            load =  DataClass(  15.*60.,L)                 # timestep[s]
+            pv =    DataClass(  60.*60.,L)                   # timestep[s]
+            gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
+            bat =   BattClass(  batt_power,batt_energy,1.0,15*60.,L)      # kW, kWh, soc0 tstep[s]
+            grid =  GridClass(  100.,L)                    # kW
 
-max_ttff = np.max(ttff)
-min_ttff = np.min(ttff)
-avg_ttff = np.average(ttff)
+            # timestamp this data point
+            results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
+
+            # run the dispatch simulation
+            results.time_to_grid_import_h_nf[i] = simulate_outage(t0,L)
+
+            # calculate one last result
+            results.onlineTime_h_ni[i] = grid.offlineCounter/4.
+
+        # keep track of battery power and pv scaling
+        batt_energy_vals.append(batt_energy)
+        pv_scale_vals.append(pv_scaling_factor)
+
+        # calculate some resilience metrics
+        #   80% @ 1 wk, 50% @ 2 wks
+        ttff  = results.time_to_grid_import_h_nf
+
+        conf_168h.append(len(ttff[ttff >= 168])/runs) 
+        conf_336h.append(len(ttff[ttff >= 336])/runs) 
+
+        max_ttff.append(np.max(ttff))
+        min_ttff.append(np.min(ttff))
+        avg_ttff.append(np.average(ttff))
+
+        print(str(pv_scaling_factor) +' ' + str(batt_energy) + ' ' + str(len(ttff[ttff>=168])/runs))
 
 t_script_finished_dt = dt.datetime.now()
 t_elapsed_dt = t_script_finished_dt - t_script_begin_dt
 results.code_runtime_s = t_elapsed_dt.total_seconds()
 
 
-
 #
 # Outputs
 #
 
-if output_file_on:
-    with open('./Data/Output/output.csv', 'w', newline='') as file:
+if superloop_file_on:
+    with open('./Data/Output/superloop.csv', 'w', newline='') as file:
         output = csv.writer(file)
         output.writerow(['Datetime',dt.datetime.now()])
         output.writerow(['Runtime [s]',results.code_runtime_s])
         output.writerow(['Site',site])
-        output.writerow(['Runs',runs])
-        output.writerow(['Simulation period [days]',days])
+        output.writerow(['Batt power [kW]', batt_power])
+        output.writerow(['Gen power [kW]', gen_power])
+        output.writerow(['Gen tank size [gal]', gen_tank])
+        output.writerow([])
+        output.writerow(['PV scaling factor','Batt energy [kWh]','Confidence 168h','Confidence 336h','Min TTFF [h]','Avg TTFF [h]', 'Max TTFF [h]'])
+        for i in range(len(max_ttff)):
+            output.writerow([pv_scale_vals[i],batt_energy_vals[i],conf_168h[i],conf_336h[i],min_ttff[i],avg_ttff[i],max_ttff[i]])
+
+if output_file_on:
+    with open('./Data/Output/output.csv', 'w', newline='') as file:
+        output = csv.writer(file)
+        output.writerow(['Site',site])
+        output.writerow(['Datetime',dt.datetime.now()])
+        output.writerow(['Runtime [s]',results.code_runtime_s])
+        output.writerow(['Simulated outage duration [days]',days])
+        output.writerow(['Outages simulated',runs])
+        output.writerow([])
+        output.writerow(['PV scaling factor', pv_scaling_factor])
         output.writerow(['Battery power [kW]',batt_power])
         output.writerow(['Battery energy [kWh]',batt_energy])
         output.writerow(['Generator power [kW]',gen_power])
@@ -745,7 +793,7 @@ if output_file_on:
         output.writerow(['Avg TTFF [h]', avg_ttff])
         output.writerow(['Min TTFF [h]', min_ttff])
         output.writerow([])
-        output.writerow(['Run','Outage Start', 'Time to First Failure [h]', 'Cumulative Operating Time [h]'])
+        output.writerow(['Outage','Outage Start', 'Time to First Failure [h]', 'Cumulative Operating Time [h]'])
         for i in range(runs):
             output.writerow([i+1,results.datetime[i],results.time_to_grid_import_h_nf[i],results.onlineTime_h_ni[i]])
 
