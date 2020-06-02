@@ -41,7 +41,7 @@
 # 5.0 - superloop runs a matrix of battery energy and PV scale (oversize) factors, output and superloop files 
 #   5.1 - bug where superloop output fails
 #   5.2 - for superloop batt power varies to always be 1h cap
-
+#   5.3 - varying batt power doesn't do much, leave out for now
 
 ################################################################################
 #
@@ -682,8 +682,6 @@ for pv_scaling_factor in pv_scale_vector:
     for batt_energy in batt_energy_vector: 
         [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
 
-        batt_power = batt_energy
-
         #
         # Data source
         #
@@ -767,7 +765,7 @@ if superloop_enabled:
         output.writerow(['Datetime',dt.datetime.now()])
         output.writerow(['Runtime [s]',results.code_runtime_s])
         output.writerow(['Site',site])
-        output.writerow(['Batt power sized for 1h capacity'])
+        output.writerow(['Batt power [kW]',batt_power])
         output.writerow(['Gen power [kW]', gen_power])
         output.writerow(['Gen tank size [gal]', gen_tank])
         output.writerow([])
