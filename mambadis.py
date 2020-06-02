@@ -42,6 +42,7 @@
 #   5.1 - bug where superloop output fails
 #   5.2 - for superloop batt power varies to always be 1h cap
 #   5.3 - varying batt power doesn't do much, leave out for now
+#   5.4 - bug fix: for super small load-gen imbalance code would declare failure, microgrid class
 
 ################################################################################
 #
@@ -192,6 +193,27 @@ class GridClass:
     def timer_tick(me):
         if not me.import_on:
             me.time_to_import += 1
+
+#
+# Microgrid
+#
+
+class MicrogridClass:
+    def __init__(me):
+        me.failure = 0
+        me.time_to_failure = 0
+
+    def clear(me):
+        me.time_to_failure = 0
+        me.failure = 0
+
+    def timer_tick(me):
+        if not me.failure:
+            me.time_to_failure += 1
+    
+    def failed(me):
+        me.failure = 1
+
 
 #
 # Battery
@@ -512,19 +534,27 @@ def simulate_outage(t_0,L):
             LSBimbalance = LSimbalance - battpower
             genpower = gen.power_request(i,0)
 
-        LSBGimbalance = LSBimbalance    -   genpower        # load-solar-batt-gen imbalance
+        LSBGimbalance = LSimbalance - battpower  -   genpower        # load-solar-batt-gen imbalance
+
+        # check if load is fully served
+        if(LSBGimbalance > 0.1):
+            microgrid.failed()
+        else:
+            microgrid.timer_tick()
 
         gridpower = grid.power_request(i,LSBGimbalance)
-
+        
+        
 
         if gridpower <= 0:
             grid.offlineCounter += 1                        # time that microgrid services load
+        
 
         # check energy balance
         if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
             err.energy_balance()
 
-    time_to_grid_import = grid.time_to_import/(3600./load.timestep)
+    time_to_grid_import = microgrid.time_to_failure/(3600./load.timestep)
 
     # vectors
     if vectors_on:
@@ -723,11 +753,14 @@ for pv_scaling_factor in pv_scale_vector:
             gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
             bat =   BattClass(  batt_power,batt_energy,1.0,15*60.,L)      # kW, kWh, soc0 tstep[s]
             grid =  GridClass(  100.,L)                    # kW
+            microgrid = MicrogridClass()
 
             # timestamp this data point
             results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
-
+            
+            #
             # run the dispatch simulation
+            #
             results.time_to_grid_import_h_nf[i] = simulate_outage(t0,L)
 
             # calculate one last result
