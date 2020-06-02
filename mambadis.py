@@ -40,6 +40,9 @@
 #   4.6 - keep mambadis.py in main dir, output resilience conf and ttff
 # 5.0 - superloop runs a matrix of battery energy and PV scale (oversize) factors, output and superloop files 
 #   5.1 - bug where superloop output fails
+#   5.2 - for superloop batt power varies to always be 1h cap
+
+
 ################################################################################
 #
 # Modules
@@ -658,8 +661,8 @@ if len(sys.argv) > 1:
             quit()
 
 if superloop_enabled:
-    pv_scale_vector = [1,1.25]#,1.5,1.75,2]
-    batt_energy_vector = [250,500]#,750,1000]
+    pv_scale_vector = [1,1.5,2,2.5,3,3.5]
+    batt_energy_vector = [30,60,125,250]
 else:
     pv_scale_vector = [pv_scaling_factor]
     batt_energy_vector = [batt_energy]
@@ -678,6 +681,8 @@ conf_336h = []
 for pv_scaling_factor in pv_scale_vector:
     for batt_energy in batt_energy_vector: 
         [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
+
+        batt_power = batt_energy
 
         #
         # Data source
@@ -745,7 +750,7 @@ for pv_scaling_factor in pv_scale_vector:
         min_ttff.append(np.min(ttff))
         avg_ttff.append(np.average(ttff))
 
-        print(str(pv_scaling_factor) +' ' + str(batt_energy) + ' ' + str(len(ttff[ttff>=168])/runs))
+        print(str(pv_scaling_factor) +' ' + str(batt_power) + ' ' + str(batt_energy) + ' ' + str(len(ttff[ttff>=168])/runs))
 
 t_script_finished_dt = dt.datetime.now()
 t_elapsed_dt = t_script_finished_dt - t_script_begin_dt
@@ -762,7 +767,7 @@ if superloop_enabled:
         output.writerow(['Datetime',dt.datetime.now()])
         output.writerow(['Runtime [s]',results.code_runtime_s])
         output.writerow(['Site',site])
-        output.writerow(['Batt power [kW]', batt_power])
+        output.writerow(['Batt power sized for 1h capacity'])
         output.writerow(['Gen power [kW]', gen_power])
         output.writerow(['Gen tank size [gal]', gen_tank])
         output.writerow([])
