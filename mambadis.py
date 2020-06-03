@@ -1,48 +1,52 @@
 # mambadis.py
-# mjw 2020.3.26
-# muGrid Analytics
+# Fast, cycle charging dispatch of PV-battery-generator migrogrids
+
 # python 3.7
 
-# Fast, cycle charging dispatch of PV-battery-generator migrogrids
+__author__ = "Michael Wood"
+__email__ = "michael.wood@mugrid.com"
+__copyright__ = "Copyright 2020, muGrid Analytics"
+__version__ = "5.5"
 
 #
 # Versions
 #
 
-# 0.0 - first attempt with synthetic data (no rev number in file)
-#   0.1 - load in real PV and load data
-# 1.0 - separate synthetic and real data
-#   1.1 - match up load data to PV vector, PV data in kW
-#   1.2 - "all" load/pv data as well as L-length data, tested on different t0's
-#   1.3 - no more "if LSimbalance>0" logic (not needed)
-# 2.0 - "test_vX.py" changed to "lilcc_vX.py"
-#   2.1 - include gen fuel calc and tank size (not working now)
-#   2.2 - simulate_outage() works for many loops but "indexing" error, can't pre-allocate load. pv. bat. etc
-#   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
-# 3.0 - manual changes to work with FISH data, PV timeseries wrap around 12/31
-#   3.1 - ** SOC_0 = 1.0 ***, load stats, tested on HR Adult Center (manual changes)
-#   3.2 - now actually tested on python 3, pass sitename to load function, HR fire broken
-#   3.3 - rename to mambadis.py ("fast snake" dispatch)
-#   3.4 - ** run from command line **, output to csv filename
-#   3.5 - measure runtime, command line run options overwrite defaults
-#   3.6 - simplify offsets, fuel curve lookup table, some small things
-#   3.7 - add _nf to numpy float and _ni to numpy int array variable names, _dt to datetime variables, remove some implicit casts
-#   3.8 - can accept 15 min interval PV data (not fully tested)
-#   3.9 - ** PV 15 min interval data tested **, new filename
-#   3.10 - simulation dispatch vector now output to csv
-#   3.11 - fix bug where simulation dispatch vector showed wrong P_pv
-# 4.0 - real CC dispatch including min on/off time, nonzero batt efficiency, need to clean up algo & "grid" aspect
-#   4.1 - change dispatch when gen tank is empty
-#   4.2 - min on/off time was causing early microgrid failures
-#   4.3 - help
-#   4.4 - help is broken (removed), add pv scaling factor 
-#   4.5 - fixed help, -sk skip ahead arg, new folder organization, new filenames for clarity
-#   4.6 - keep mambadis.py in main dir, output resilience conf and ttff
-# 5.0 - superloop runs a matrix of battery energy and PV scale (oversize) factors, output and superloop files 
-#   5.1 - bug where superloop output fails
-#   5.2 - for superloop batt power varies to always be 1h cap
-#   5.3 - varying batt power doesn't do much, leave out for now
+#   5.5 - batt power varies 1:1 with energy unless -bp [kW], named output file for every loop in superloop, code version
 #   5.4 - bug fix: for super small load-gen imbalance code would declare failure, microgrid class
+#   5.3 - varying batt power doesn't do much, leave out for now
+#   5.2 - for superloop batt power varies to always be 1h cap
+#   5.1 - bug where superloop output fails
+# 5.0 - superloop runs a matrix of battery energy and PV scale (oversize) factors, output and superloop files
+#   4.6 - keep mambadis.py in main dir, output resilience conf and ttff
+#   4.5 - fixed help, -sk skip ahead arg, new folder organization, new filenames for clarity
+#   4.4 - help is broken (removed), add pv scaling factor
+#   4.3 - help
+#   4.2 - min on/off time was causing early microgrid failures
+#   4.1 - change dispatch when gen tank is empty
+# 4.0 - real CC dispatch including min on/off time, nonzero batt efficiency, need to clean up algo & "grid" aspect
+#   3.11 - fix bug where simulation dispatch vector showed wrong P_pv
+#   3.10 - simulation dispatch vector now output to csv
+#   3.9 - ** PV 15 min interval data tested **, new filename
+#   3.8 - can accept 15 min interval PV data (not fully tested)
+#   3.7 - add _nf to numpy float and _ni to numpy int array variable names, _dt to datetime variables, remove some implicit casts
+#   3.6 - simplify offsets, fuel curve lookup table, some small things
+#   3.5 - measure runtime, command line run options overwrite defaults
+#   3.4 - ** run from command line **, output to csv filename
+#   3.3 - rename to mambadis.py ("fast snake" dispatch)
+#   3.2 - now actually tested on python 3, pass sitename to load function, HR fire broken
+#   3.1 - ** SOC_0 = 1.0 ***, load stats, tested on HR Adult Center (manual changes)
+# 3.0 - manual changes to work with FISH data, PV timeseries wrap around 12/31
+#   2.3 - switch to python 3.7 for dev, note that input data tested with HR Fire
+#   2.2 - simulate_outage() works for many loops but "indexing" error, can't pre-allocate load. pv. bat. etc
+#   2.1 - include gen fuel calc and tank size (not working now)
+# 2.0 - "test_vX.py" changed to "lilcc_vX.py"
+#   1.3 - no more "if LSimbalance>0" logic (not needed)
+#   1.2 - "all" load/pv data as well as L-length data, tested on different t0's
+#   1.1 - match up load data to PV vector, PV data in kW
+# 1.0 - separate synthetic and real data
+#   0.1 - load in real PV and load data
+# 0.0 - first attempt with synthetic data (no rev number in file)
 
 ################################################################################
 #
@@ -112,7 +116,7 @@ class GenClass:
     def power_request(me, i, p_req):
         if (p_req > 0) & (p_req < 0.001):
             p_req = 0
-        
+
         if (p_req > 0) & me.cool_down_complete():
             p_final = min(p_req,  me.Pn_kw, me.Pmax_tank())
         elif (p_req == 0) & me.warm_up_complete():
@@ -210,7 +214,7 @@ class MicrogridClass:
     def timer_tick(me):
         if not me.failure:
             me.time_to_failure += 1
-    
+
     def failed(me):
         me.failure = 1
 
@@ -407,7 +411,7 @@ def import_pv_data(site):
         else:
             pv[i] = 0
         i += 1
-    
+
     pv_all.P_kw_nf = np.concatenate((pv,pv),axis=0)
     pv_all.P_kw_nf = pv_scaling_factor * pv_all.P_kw_nf
 
@@ -543,12 +547,12 @@ def simulate_outage(t_0,L):
             microgrid.timer_tick()
 
         gridpower = grid.power_request(i,LSBGimbalance)
-        
-        
+
+
 
         if gridpower <= 0:
             grid.offlineCounter += 1                        # time that microgrid services load
-        
+
 
         # check energy balance
         if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
@@ -581,7 +585,7 @@ def simulate_outage(t_0,L):
     return time_to_grid_import
 
 #
-# Print help 
+# Print help
 #
 
 def help_printout():
@@ -593,7 +597,7 @@ def help_printout():
     print('Required Command Line Arguments')
     print(' Site name:              -s [sitename]       e.g. -s hradult')
     print(' Battery power:          -bp [power kW]      e.g. -bp 60')
-    print(' Battery energy:         -be [energy kWh]    e.g. -be 120') 
+    print(' Battery energy:         -be [energy kWh]    e.g. -be 120')
     print(' Generator power:        -gp [power kW]      e.g. -gp 60')
     print(' Generator tank:         -gt [size gal]      e.g. -gt 200')
     print('')
@@ -603,7 +607,7 @@ def help_printout():
     print(' Load stats ON:           -l                 e.g. -l     default=OFF')
     print(' Debug ON:                -d                 e.g. -d     default=OFF')
     print(' Skip ahead "h" hours:    -sk [h]            e.g. -sk 24 default=OFF')
-    print(' Superloop enable:        -sl                e.g. -sl    default=DISABLED')
+    print(' Superloop enable:        -sl                e.g. -sl    default=OFF')
     print('')
 
 
@@ -629,10 +633,11 @@ solar_data_inverval_15min = 1
 superloop_enabled = 0           # run matrix of battery energy and PV scale (oversize) factors
 
 # physical capacities
-batt_power = 60.         # kw
+batt_power = 0.         # kw
 batt_energy = 60.       # kwh
-gen_power = 60.           # kw
+gen_power = 0.           # kw
 gen_tank = 250.          # gal
+batt_power_varies = 1  # batt power such that capacity = 1h
 
 # outputs on/off
 superloop_file_on = 0
@@ -661,6 +666,7 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-bp':
             batt_power = float(sys.argv[i+1])
+            batt_power_varies = 0
 
         elif sys.argv[i] == '-be':
             batt_energy = float(sys.argv[i+1])
@@ -682,17 +688,34 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-sk':
             skip_ahead = int(sys.argv[i+1])
-        
+
         elif sys.argv[i] == '-sl':
             superloop_enabled = 1
+
+        elif sys.argv[i] == '-slp':
+            j = i + 6 + 1                # excpect 6 more args
+            superloop_enabled = 1
+            strs = sys.argv[i+1:j]
+            pv_scale_vector = [float(i) for i in strs]
+
+        elif sys.argv[i] == '-slb':
+            j = i + 4 + 1               # excpect 4 more args
+            superloop_enabled = 1
+            strs = sys.argv[i+1:j]
+            batt_energy_vector = [int(i) for i in strs]
+
 
         elif sys.argv[i] == '--help' :
             help_printout()
             quit()
 
+#
+# Superloop
+#
+
 if superloop_enabled:
-    pv_scale_vector = [1,1.5,2,2.5,3,3.5]
-    batt_energy_vector = [30,60,125,250]
+    pv_scale_vector = [1,1.25,1.5,1.75,2]
+    batt_energy_vector = [30,60,90]
 else:
     pv_scale_vector = [pv_scaling_factor]
     batt_energy_vector = [batt_energy]
@@ -709,8 +732,11 @@ conf_168h = []
 conf_336h = []
 
 for pv_scaling_factor in pv_scale_vector:
-    for batt_energy in batt_energy_vector: 
+    for batt_energy in batt_energy_vector:
         [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
+
+        if batt_power_varies:
+            batt_power = batt_energy
 
         #
         # Data source
@@ -744,7 +770,7 @@ for pv_scaling_factor in pv_scale_vector:
         for i in range(runs):
             h=3*i + skip_ahead
             t0=h*4       # where to start simulation in "all load" vector
-            
+
             # start with fresh variables
             # wish we could pre-allocate these, but it was causing a bug
             #   even after calling .clear() on everything
@@ -757,7 +783,7 @@ for pv_scaling_factor in pv_scale_vector:
 
             # timestamp this data point
             results.datetime.append(dt.datetime(2019,1,1) + dt.timedelta(hours=h))
-            
+
             #
             # run the dispatch simulation
             #
@@ -774,14 +800,46 @@ for pv_scaling_factor in pv_scale_vector:
         #   80% @ 1 wk, 50% @ 2 wks
         ttff  = results.time_to_grid_import_h_nf
 
-        conf_168h.append(len(ttff[ttff >= 168])/runs) 
-        conf_336h.append(len(ttff[ttff >= 336])/runs) 
+        conf_168h.append(len(ttff[ttff >= 168])/runs)
+        conf_336h.append(len(ttff[ttff >= 336])/runs)
 
         max_ttff.append(np.max(ttff))
         min_ttff.append(np.min(ttff))
         avg_ttff.append(np.average(ttff))
 
         print(str(pv_scaling_factor) +' ' + str(batt_power) + ' ' + str(batt_energy) + ' ' + str(len(ttff[ttff>=168])/runs))
+
+        if output_file_on:
+            if superloop_enabled:
+                filename = './Data/Output/output_{:.2f}_{:.0f}.csv'.format(pv_scaling_factor, batt_energy)
+            else:
+                filename = './Data/Output/output.csv'
+            with open(filename, 'w', newline='') as file:
+                output = csv.writer(file)
+                output.writerow(['Site',site])
+                output.writerow(['Mambadis.py v',__version__])
+                output.writerow(['Datetime',dt.datetime.now()])
+                output.writerow(['Runtime [s]',results.code_runtime_s])
+                output.writerow(['Simulated outage duration [days]',days])
+                output.writerow(['Outages simulated',runs])
+                output.writerow([])
+                output.writerow(['PV scaling factor', pv_scaling_factor])
+                output.writerow(['Battery power [kW]',batt_power])
+                output.writerow(['Battery energy [kWh]',batt_energy])
+                output.writerow(['Generator power [kW]',gen_power])
+                output.writerow(['Generator tank [gal]',gen_tank])
+                output.writerow(['Fuel curve A coefficient [gal/h/kW]',gen_fuelA])
+                output.writerow(['Fuel curve B coefficient [gal/h]',gen_fuelB])
+                output.writerow([])
+                output.writerow(['Confidence 168 h',conf_168h])
+                output.writerow(['Confidence 336 h',conf_336h])
+                output.writerow(['Max TTFF [h]', max_ttff])
+                output.writerow(['Avg TTFF [h]', avg_ttff])
+                output.writerow(['Min TTFF [h]', min_ttff])
+                output.writerow([])
+                output.writerow(['Outage','Outage Start', 'Time to First Failure [h]', 'Cumulative Operating Time [h]'])
+                for i in range(runs):
+                    output.writerow([i+1,results.datetime[i],results.time_to_grid_import_h_nf[i],results.onlineTime_h_ni[i]])
 
 t_script_finished_dt = dt.datetime.now()
 t_elapsed_dt = t_script_finished_dt - t_script_begin_dt
@@ -795,43 +853,20 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 if superloop_enabled:
     with open('./Data/Output/superloop.csv', 'w', newline='') as file:
         output = csv.writer(file)
+        output.writerow(['Site',site])
+        output.writerow(['Mambadis.py v',__version__])
         output.writerow(['Datetime',dt.datetime.now()])
         output.writerow(['Runtime [s]',results.code_runtime_s])
-        output.writerow(['Site',site])
-        output.writerow(['Batt power [kW]',batt_power])
+        if batt_power_varies:
+            output.writerow(['Battery power varies such that capacity is 1h'])
+        else:
+            output.writerow(['Battery power [kW]',batt_power])
         output.writerow(['Gen power [kW]', gen_power])
         output.writerow(['Gen tank size [gal]', gen_tank])
         output.writerow([])
         output.writerow(['PV scaling factor','Batt energy [kWh]','Confidence 168h','Confidence 336h','Min TTFF [h]','Avg TTFF [h]', 'Max TTFF [h]'])
         for i in range(len(max_ttff)):
             output.writerow([pv_scale_vals[i],batt_energy_vals[i],conf_168h[i],conf_336h[i],min_ttff[i],avg_ttff[i],max_ttff[i]])
-
-if output_file_on:
-    with open('./Data/Output/output.csv', 'w', newline='') as file:
-        output = csv.writer(file)
-        output.writerow(['Site',site])
-        output.writerow(['Datetime',dt.datetime.now()])
-        output.writerow(['Runtime [s]',results.code_runtime_s])
-        output.writerow(['Simulated outage duration [days]',days])
-        output.writerow(['Outages simulated',runs])
-        output.writerow([])
-        output.writerow(['PV scaling factor', pv_scaling_factor])
-        output.writerow(['Battery power [kW]',batt_power])
-        output.writerow(['Battery energy [kWh]',batt_energy])
-        output.writerow(['Generator power [kW]',gen_power])
-        output.writerow(['Generator tank [gal]',gen_tank])
-        output.writerow(['Fuel curve A coefficient [gal/h/kW]',gen_fuelA])
-        output.writerow(['Fuel curve B coefficient [gal/h]',gen_fuelB])
-        output.writerow([])
-        output.writerow(['Confidence 168 h',conf_168h])
-        output.writerow(['Confidence 336 h',conf_336h])
-        output.writerow(['Max TTFF [h]', max_ttff])
-        output.writerow(['Avg TTFF [h]', avg_ttff])
-        output.writerow(['Min TTFF [h]', min_ttff])
-        output.writerow([])
-        output.writerow(['Outage','Outage Start', 'Time to First Failure [h]', 'Cumulative Operating Time [h]'])
-        for i in range(runs):
-            output.writerow([i+1,results.datetime[i],results.time_to_grid_import_h_nf[i],results.onlineTime_h_ni[i]])
 
 # plots
 if plots_on:
