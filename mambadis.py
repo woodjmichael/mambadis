@@ -12,6 +12,7 @@ __version__ = "5.5"
 # Versions
 #
 
+#   5.6 - bug: "../" instead of "./"
 #   5.5 - batt power varies 1:1 with energy unless -bp [kW], named output file for every loop in superloop, code version
 #   5.4 - bug fix: for super small load-gen imbalance code would declare failure, microgrid class
 #   5.3 - varying batt power doesn't do much, leave out for now
@@ -382,7 +383,7 @@ def import_pv_data(site):
     if solar_data_inverval_15min:
         filename = './Data/Solar/' + site + '_solar_35040.csv'
     else:
-        filename = '../Data/Solar/' + site + '_solar.csv'
+        filename = './Data/Solar/' + site + '_solar.csv'
 
     with open(filename,'r') as f:
         datacsv = list(csv.reader(f, delimiter=","))
