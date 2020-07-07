@@ -12,7 +12,6 @@ __version__ = "5.7"
 # Versions
 #
 
-#   5.7.1 - MG: test push
 #   5.7 - MG: load scaling factor, more superloop dims (independent battery power, generator size), custom sim interval, output file tweaks
 #   5.6 - bug: "../" instead of "./"
 #   5.5 - batt power varies 1:1 with energy unless -bp [kW], named output file for every loop in superloop, code version
