@@ -325,14 +325,15 @@ def find_load_pv_offset():
 # Fuel curve coefficients
 #
 
-def lookup_fuel_curve_coeffs(power):
+def lookup_fuel_curve_coeffs(power, gen_fuel_propane):
     # coeffs = [fuel_curve_coeff_A, fuel_curve_coeff_B]
-    if power < 25:      coeffs = [0.06 , 0.3]
+    if power < 25:      coeffs = [0.060 , 0.3]
     elif power < 35:    coeffs = [0.067, 1.23]
-    elif power < 50:    coeffs = [0.8, 1.52]
+    elif power < 50:    coeffs = [0.080, 1.52]   # this was 0.8 before, a real issue for any 35 ≤ Pg < 50
     elif power < 67:    coeffs = [0.067, 1.73]
     elif power < 87:    coeffs = [0.071, 2.33]
     elif power < 120:   coeffs = [0.064, 2.54]
+    elif power < 180 and gen_fuel_propane: coeffs = [0.1441,0.665]
     else:
         coeffs = [0.064, 2.54]
         err.gen_fuel_coeffs()
@@ -610,6 +611,7 @@ def help_printout():
     print(' Debug ON:                -d                 e.g. -d     default=OFF')
     print(' Skip ahead "h" hours:    -sk [h]            e.g. -sk 24 default=OFF')
     print(' Superloop enable:        -sl                e.g. -sl    default=OFF')
+    print(' Gen fuel is propane:     -fp                e.g. -fp    default=OFF')
     print('')
 
 
@@ -647,6 +649,7 @@ batt_hrs = 0.           #kWh/kW
 batt_energy = 60.       # kwh
 gen_power = 0.           # kw
 gen_tank = 0.          # gal
+gen_fuel_propane = 0    # 1 = propane, 0 = diesel
 batt_power_varies = 1  # batt power such that capacity = 1h
 
 # outputs on/off
@@ -715,6 +718,8 @@ if len(sys.argv) > 1:
             strs = sys.argv[i+1:j]
             batt_energy_vector = [int(i) for i in strs]
 
+        elif sys.argv[i] == '-fp':
+            gen_fuel_propane = 1
 
         elif sys.argv[i] == '--help' :
             help_printout()
@@ -758,7 +763,7 @@ for load_scaling_factor in load_scale_vector:
         for batt_power in batt_power_vector:
             for batt_hrs in batt_hrs_vector:
                 for gen_power in gen_power_vector:
-                    [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power)
+                    [gen_fuelA, gen_fuelB] = lookup_fuel_curve_coeffs(gen_power, gen_fuel_propane)
 
                     if batt_power_varies:
                         batt_energy = batt_power * batt_hrs
