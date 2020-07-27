@@ -12,6 +12,7 @@ __version__ = "5.9"
 # Versions
 #
 
+#   5.10 - add dummy parameter to make output filenames unique during parallel runs
 #   5.9 - fix version number
 #   5.8 - bug: fuel curve A for 35-50 kW was 10x too high, add new fuel curve for propane 150 kW
 #   5.7 - MG: load scaling factor, more superloop dims (independent battery power, generator size), custom sim interval, output file tweaks
@@ -567,7 +568,8 @@ def simulate_outage(t_0,L):
 
     # vectors
     if vectors_on:
-        with open('./Data/Output/vectors.csv', 'w', newline='') as file:
+        filename = './Data/Output/vectors_{}.csv'.format(filename_param)
+        with open(filename, 'w', newline='') as file:
             output = csv.writer(file)
             output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
             for i in range(L):
@@ -636,6 +638,7 @@ err =   FaultClass()
 site = 'hradult'                    # fish, hradult, (hrfire not working)
 pv_scaling_factor = 1
 load_scaling_factor = 1
+filename_param = ''
 
 # simulation
 simulation_interval = 3            # hours between simulated outages
@@ -722,6 +725,9 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-fp':
             gen_fuel_propane = 1
+
+        elif sys.argv[i] == '-sv':
+            filename_param == str(sys.argv[i+1])
 
         elif sys.argv[i] == '--help' :
             help_printout()
@@ -849,7 +855,7 @@ for load_scaling_factor in load_scale_vector:
                         if superloop_enabled:
                               filename = './Data/Output/output_{:}_{:.1f}_{:.2f}_{:.0f}_{:.3f}_{:.4f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
-                            filename = './Data/Output/output_{}.csv'.format(site)
+                            filename = './Data/Output/output_{}_{}.csv'.format(site, filename_param)
                         with open(filename, 'w', newline='') as file:
                             output = csv.writer(file)
                             output.writerow(['Site',site])
