@@ -12,6 +12,7 @@ __version__ = "5.11"
 # Versions
 #
 
+#   5.12 - add battery hours arg
 #   5.11 - adjust superloop output filename (significant digits on params)
 #   5.10 - add dummy parameter to make output filenames unique during parallel runs
 #   5.9 - fix version number
@@ -687,6 +688,10 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-bp':
             batt_power = float(sys.argv[i+1])
             batt_power_varies = 0
+
+        elif sys.argv[i] == '-bh':
+            batt_hrs = float(sys.argv[i+1])
+            batt_power_varies = 1
 
         elif sys.argv[i] == '-be':
             batt_energy = float(sys.argv[i+1])
