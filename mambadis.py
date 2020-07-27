@@ -6,7 +6,7 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "5.9"
+__version__ = "5.11"
 
 #
 # Versions
