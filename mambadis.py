@@ -728,7 +728,7 @@ if len(sys.argv) > 1:
             gen_fuel_propane = 1
 
         elif sys.argv[i] == '-sv':
-            filename_param == str(sys.argv[i+1])
+            filename_param = str(sys.argv[i+1])
 
         elif sys.argv[i] == '--help' :
             help_printout()
