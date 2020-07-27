@@ -12,6 +12,7 @@ __version__ = "5.9"
 # Versions
 #
 
+#   5.11 - adjust superloop output filename (significant digits on params)
 #   5.10 - add dummy parameter to make output filenames unique during parallel runs
 #   5.9 - fix version number
 #   5.8 - bug: fuel curve A for 35-50 kW was 10x too high, add new fuel curve for propane 150 kW
@@ -853,7 +854,7 @@ for load_scaling_factor in load_scale_vector:
 
                     if output_file_on:
                         if superloop_enabled:
-                              filename = './Data/Output/output_{:}_{:.1f}_{:.2f}_{:.0f}_{:.3f}_{:.4f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
+                              filename = './Data/Output/output_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = './Data/Output/output_{}_{}.csv'.format(site, filename_param)
                         with open(filename, 'w', newline='') as file:
