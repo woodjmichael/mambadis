@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "5.13"
+__version__ = "5.14"
 
 #
 # Versions
 #
 
+#   5.14 - soc_max and _min now available within Run options
 #   5.13 - add grid_online switch and rework dispatch strategy for grid_online, batt charges only from PV for now, add smart_charging_on switch and keep off
 #   5.12 - add battery hours arg
 #   5.11 - adjust superloop output filename (significant digits on params)
@@ -266,10 +267,10 @@ class BattClass:
         return soc_new
 
     def P_max_soc(me):
-        return me.soc_prev * me.En_kwh * (3600.0/me.timestep)
+        return (me.soc_prev - soc_min) * me.En_kwh * (3600.0/me.timestep)
 
     def P_min_soc(me):
-        return (me.soc_prev - 1.) * me.En_kwh * (3600.0/me.timestep)
+        return (me.soc_prev - soc_max) * me.En_kwh * (3600.0/me.timestep)
 #
 # Faults
 #
@@ -675,6 +676,8 @@ gen_power = 0.           # kw
 gen_tank = 0.          # gal
 gen_fuel_propane = 0    # 1 = propane, 0 = diesel
 batt_power_varies = 1  # batt power such that capacity = 1h
+soc_min = 0.4
+soc_max = 0.95
 
 # outputs on/off
 superloop_file_on = 0
@@ -842,7 +845,7 @@ for load_scaling_factor in load_scale_vector:
                         load =  DataClass(  15.*60.,L)                 # timestep[s]
                         pv =    DataClass(  60.*60.,L)                   # timestep[s]
                         gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
-                        bat =   BattClass(  batt_power,batt_energy,1.0,15*60.,L)      # kW, kWh, soc0 tstep[s]
+                        bat =   BattClass(  batt_power,batt_energy,0.9499,15*60.,L)      # kW, kWh, soc0 tstep[s]
                         grid =  GridClass(  100.,L)                    # kW
                         microgrid = MicrogridClass()
 
