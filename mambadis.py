@@ -12,6 +12,7 @@ __version__ = "5.13"
 # Versions
 #
 
+#   5.14 - fix dispatch logic, add soc constraints
 #   5.13 - add grid_online switch and rework dispatch strategy for grid_online, batt charges only from PV for now, add smart_charging_on switch and keep off
 #   5.12 - add battery hours arg
 #   5.11 - adjust superloop output filename (significant digits on params)
@@ -266,10 +267,10 @@ class BattClass:
         return soc_new
 
     def P_max_soc(me):
-        return me.soc_prev * me.En_kwh * (3600.0/me.timestep)
+        return (me.soc_prev - soc_min) * me.En_kwh * (3600.0/me.timestep)
 
     def P_min_soc(me):
-        return (me.soc_prev - 1.) * me.En_kwh * (3600.0/me.timestep)
+        return (me.soc_prev - soc_max) * me.En_kwh * (3600.0/me.timestep)
 #
 # Faults
 #
@@ -524,7 +525,7 @@ def simulate_outage(t_0,L):
             else:
                 backuppower = gen.power_request(i, LSBimbalance)
 
-            if bat.soc_prev < 0.001:                            # we only charge battery with extra PV power in this version (v5.13)
+            if bat.soc_prev < soc_min + 0.001:                            # we only charge battery with extra PV power in this version (v5.13)
               #  LSGimbalance = LSimbalance - gen.Pn_kw
               #  battpower = bat.power_request(i,LSGimbalance)
               #  LSBimbalance = LSimbalance - battpower
@@ -573,10 +574,10 @@ def simulate_outage(t_0,L):
         else:
             microgrid.timer_tick()
 
-        if not grid_online:
-            gridpower = grid.power_request(i,LSBGimbalance)
-            if gridpower <= 0:
-                grid.offlineCounter += 1                        # time that microgrid services load
+        #    gridpower = grid.power_request(i,LSBGimbalance)
+        if grid_online:
+            if gridpower <= 0:                                 # checking if grid transaction was feeding the grid
+                grid.offlineCounter += 1                       # calculates cumulative operating time
 
 
         # check energy balance
@@ -675,6 +676,8 @@ gen_power = 0.           # kw
 gen_tank = 0.          # gal
 gen_fuel_propane = 0    # 1 = propane, 0 = diesel
 batt_power_varies = 1  # batt power such that capacity = 1h
+soc_min = 0.4
+soc_max = 0.95
 
 # outputs on/off
 superloop_file_on = 0
