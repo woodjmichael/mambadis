@@ -39,3 +39,7 @@ Temporary Items
 .apdisk
 
 # End of https://www.gitignore.io/api/macos
+mambadis_const.py
+mambadis_unconst.py
+Data/Output/saved badriverhc/pass 1/analysis/Aug_1to99.png
+*.png

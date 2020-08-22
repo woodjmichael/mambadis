@@ -828,7 +828,7 @@ for load_scaling_factor in load_scale_vector:
                     #
 
                     # window start and size
-                    days = 14
+                    days = 365
                     L = days*24*4                     # length of simulation in timesteps
 
                     #
@@ -845,7 +845,7 @@ for load_scaling_factor in load_scale_vector:
                         load =  DataClass(  15.*60.,L)                 # timestep[s]
                         pv =    DataClass(  60.*60.,L)                   # timestep[s]
                         gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
-                        bat =   BattClass(  batt_power,batt_energy,0.9499,15*60.,L)      # kW, kWh, soc0 tstep[s]
+                        bat =   BattClass(  batt_power,batt_energy,soc_max,15*60.,L)      # kW, kWh, soc0 tstep[s]
                         grid =  GridClass(  100.,L)                    # kW
                         microgrid = MicrogridClass()
 
