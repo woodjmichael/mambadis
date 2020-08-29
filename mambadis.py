@@ -6,13 +6,14 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "5.15"
+__version__ = "5.16"
 
 #
 # Versions
 #
 
-#   5.15 - RT batt efficiecny to 0.95, days to 365, simulation_interval to 8760
+#   5.16 - fixed soc_update and plots, some if/else dispatch logic, prevent crazy small bat.P vals, new debug and dispatch errors
+#   5.15 - annual on-grid dispatch settings: RT batt efficiecny to 0.95, days to 365, simulation_interval to 8760
 #   5.14 - soc_max and _min now available within Run options
 #   5.13 - add grid_online switch and rework dispatch strategy for grid_online, batt charges only from PV for now, add smart_charging_on switch and keep off
 #   5.12 - add battery hours arg
@@ -66,7 +67,7 @@ __version__ = "5.15"
 
 import sys
 import numpy as np
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import csv
 import datetime as dt
 import time
@@ -243,7 +244,8 @@ class BattClass:
         me.P_kw_nf = np.zeros((length,), dtype=float)
         me.soc_nf = np.zeros((length,), dtype=float)
         me.soc_flag = 0                             # binary
-        me.rt_eff = 0.95
+        me.eff_chg = 0.95
+        me.eff_dischg = 0.95
 
     def clear(me):
         me.soc_prev = me.soc0
@@ -258,12 +260,19 @@ class BattClass:
             p_final = max(p_req, -me.Pn_kw, me.P_min_soc())
         else:
             p_final = 0.
+        if abs(p_final) < 0.001: p_final = 0
         me.soc_nf[index] = me.soc_update(p_final)
         me.P_kw_nf[index] = p_final
         return p_final
 
-    def soc_update(me,powerkw):
-        soc_new = me.soc_prev - (powerkw * me.timestep/3600.0 * me.rt_eff)/me.En_kwh
+    def soc_update(me,p_soc):
+        if p_soc > 0:
+            soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 / me.eff_dischg)/me.En_kwh
+        elif p_soc < 0:
+            soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 * me.eff_chg)/me.En_kwh
+        else:
+            soc_new = me.soc_prev
+
         me.soc_prev = soc_new
         return soc_new
 
@@ -282,6 +291,7 @@ class FaultClass:
         me.energybalance = 0
         me.index = 0
         me.fuelCurveCoeffs = 0
+        me.dispatch = 0
 
     def print_faults(me):
 
@@ -298,6 +308,9 @@ class FaultClass:
         if err.fuelCurveCoeffs:
             print('')
             print('\033[1;31;1m error fuel curve coeffs (qty {:d})'.format(err.fuelCurveCoeffs))
+        if err.dispatch:
+            print('')
+            print('\033[1;31;1m error with dispatch (qty {:d})'.format(err.dispatch))
 
     def main_loop(me):
         me.mainloop += 1
@@ -309,7 +322,10 @@ class FaultClass:
         me.index += 1
 
     def gen_fuel_coeffs(me):
-        me.fuelCurveCoeffs = 1
+        me.fuelCurveCoeffs += 1
+
+    def dispatch(me):
+        me.dispatch += 1
 
 
 ################################################################################
@@ -448,7 +464,7 @@ def simulate_outage(t_0,L):
     load.P_kw_nf = load_all.P_kw_nf[m_0:m_end]
     load.datetime = load_all.datetime[m_0:m_end]
 
-    if debug:
+    if debug_indexing:
         print('LOAD')
         print('m_0={:d}'.format(m_0) + ' m_end={:d}'.format(m_end))
         print(load.datetime[0])
@@ -477,7 +493,7 @@ def simulate_outage(t_0,L):
     pv.P_kw_nf = pv_all.P_kw_nf[n_0:n_end]
     pv.datetime = pv_all.datetime[n_0:n_end]
 
-    if debug:
+    if debug_indexing:
         print('PV')
         print('n_0={:d}'.format(n_0) + ' n_end={:d}'.format(n_end))
         print(pv.datetime[0])
@@ -517,14 +533,27 @@ def simulate_outage(t_0,L):
 
         if not chg and not gen.tank_empty():                    # during a discharge cycle
 
-            battpower = bat.power_request(i,LSimbalance)
-
-            LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
-
-            if grid_online:                                     # MVG: backup power comes from grid if grid is online, gen otherwise
-                backuppower = grid.power_request(i,LSBimbalance)
+            if peak_shaving:
+                gpower = grid.power_request(i,min(demand_target,LSimbalance))
             else:
-                backuppower = gen.power_request(i, LSBimbalance)
+                gpower = 0
+
+            battpower = bat.power_request(i,LSimbalance - gpower)
+            gpower = grid.power_request(i,LSimbalance - battpower)
+
+            # battpower = bat.power_request(i,LSimbalance)
+            #
+            # LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
+            #
+            # if grid_online:                                     # MVG: backup power comes from grid if grid is online, gen otherwise
+            #     if LSimbalance < 35:
+            #         gpower = grid.power_request(i,LSimbalance)
+            #         LSGRimbalance = LSimbalance - gpower
+            #         battpower = bat.power_request(i,0)
+            #     else:
+            #          gpower = grid.power_request(i,LSBimbalance)
+            # else:
+            #     gpower = gen.power_request(i, LSBimbalance)
 
             if bat.soc_prev < 0.001:                            # we only charge battery with extra PV power in this version (v5.13)
               #  LSGimbalance = LSimbalance - gen.Pn_kw
@@ -533,16 +562,33 @@ def simulate_outage(t_0,L):
               #  genpower = gen.power_request(i, LSBimbalance)
                 chg = 1
 
-        if chg and not gen.tank_empty():                        # during a charge cycle
+        elif chg and not gen.tank_empty():                        # during a charge cycle
 
-            battpower = bat.power_request(i,LSimbalance)
+            if peak_shaving:
+                gpower = grid.power_request(i,min(67,LSimbalance))
+            else:
+                gpower = 0
 
-            LSBimbalance = LSimbalance      - battpower         # normally here we'd run gen and soak up excess with battery (v5.13)
+            battpower = bat.power_request(i,LSimbalance - gpower)
+
+            LSBimbalance = LSimbalance - battpower
+
+            gpower = grid.power_request(i,LSBimbalance)
+
+            # battpower = bat.power_request(i,LSimbalance)
+            #
+            # LSBimbalance = LSimbalance      - battpower         # normally here we'd run gen and soak up excess with battery (v5.13)
 
             if grid_online:
-                backuppower = grid.power_request(i, LSBimbalance)
+                # if (pv.P_kw_nf[i_pv] < 1) and (load.P_kw_nf[i]<35):
+                #     print('discharging, grid online, limiting batt power/n')
+                #     gpower = grid.power_request(i,LSimbalance)#min(35,LSimbalance))
+                #     LSGRimbalance = LSimbalance - gpower
+                #     battpower = bat.power_request(i,LSGRimbalance)
+                # else:
+                    gpower = grid.power_request(i,LSBimbalance)
             else:
-                backuppower = gen.power_request(i, LSBimbalance)
+                gpower = gen.power_request(i, LSBimbalance)
             # LSGimbalance = LSBimbalance - gen.Pn_kw
             # battpower = bat.power_request(i,LSGimbalance)     # only charging batt from excess PV in v5.13
             # LSBimbalance = LSimbalance - battpower
@@ -553,21 +599,24 @@ def simulate_outage(t_0,L):
                     battpower = bat.power_request(i,LSimbalance)
                     LSBimbalance = LSimbalance - battpower
                     if grid_online:
-                        backuppower = grid.power_request(i, LSBimbalance)
+                        gpower = grid.power_request(i, LSBimbalance)
                     else:
-                        backuppower = gen.power_request(i, LSBimbalance)
+                        gpower = gen.power_request(i, LSBimbalance)
                     chg = 0
 
-        if gen.tank_empty():
+        elif gen.tank_empty():
             chg = 0
             battpower = bat.power_request(i,LSimbalance)
             LSBimbalance = LSimbalance - battpower
             if grid_online:
-                backuppower = grid.power_request(i, LSBimbalance)
+                gpower = grid.power_request(i, LSBimbalance)
             else:
-                backuppower = gen.power_request(i, 0)
+                gpower = gen.power_request(i, 0)
 
-        LSBGimbalance = LSimbalance - battpower  -   backuppower        # load-solar-batt-grid/gen imbalance
+        else:
+            err.dispatch()
+
+        LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
 
         # check if load is fully served
         if(LSBGimbalance > 0.1):
@@ -576,8 +625,8 @@ def simulate_outage(t_0,L):
             microgrid.timer_tick()
 
         if not grid_online:
-            gridpower = grid.power_request(i,LSBGimbalance)
-            if gridpower <= 0:
+            gpower = grid.power_request(i,LSBGimbalance)
+            if gpower <= 0:
                 grid.offlineCounter += 1                        # time that microgrid services load
 
 
@@ -607,8 +656,29 @@ def simulate_outage(t_0,L):
                 d=l-p-b-g-G
                 output.writerow([i+1,l,p,b,s,g,G,d])
 
+
     if debug:
-        print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
+        print('checksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
+
+        sum_batdis = np.sum(np.clip(bat.P_kw_nf,0,10000))/4
+        sum_batchg = np.sum(-1*np.clip(bat.P_kw_nf,-10000,0))/4
+
+        sum_load = np.sum(load.P_kw_nf)/4
+        sum_pv = np.sum(pv.P_kw_nf)/4
+        sum_grid = np.sum(grid.P_kw_nf)/4
+
+        soc_final = bat.soc_nf.item(L-1)
+        delta_soc = bat.En_kwh * (1 - soc_final)
+
+        print('sum load: {:.0f}'.format(sum_load))
+        print('sum pv: {:.0f}'.format(sum_pv))
+        print('sum grid: {:.0f}'.format(sum_grid))
+
+        print('sum bat dis: {:.0f}'.format(sum_batdis))
+        print('sum bat chg: {:.0f}'.format(sum_batchg))
+
+        print('soc final: {:.5f}'.format(soc_final))
+        print('∆soc [kwh]: {:.0f}'.format(delta_soc))
 
     return time_to_grid_import
 
@@ -656,11 +726,11 @@ err =   FaultClass()
 #
 
 # /Users/mjw/Google Drive/Code/mambadis_git
-# -s badriverhc -r 1 -v -bp 200 -be 568 -gp 0
-# -s badriverwwtp -r 1 -v -bp 200 -be 426 -gp 0
+# -s badriverhc -r 1 -v -bp 200 -be 568 -gp 0 -go -soc 0.01 0.99
+# -s badriverwwtp -r 1 -v -bp 200 -be 568 -gp 0 -go -soc 0.4 0.95
 
 # data
-site = 'hradult'                    # fish, hradult, (hrfire not working)
+site = 'badriverwwtp'                    # fish, hradult, (hrfire not working)
 pv_scaling_factor = 1
 load_scaling_factor = 1
 filename_param = ''
@@ -671,27 +741,32 @@ runs = 365*24//simulation_interval   # number of iterations
 skip_ahead = 0                      # number of hours to skip ahead
 solar_data_inverval_15min = 1
 superloop_enabled = 0               # run matrix of battery energy and PV scale (oversize) factors
-
+peak_shaving = 0
+days = 365                          # length of grid outage
+L = days*24*4                     # length of simulation in timesteps
 
 # physical capacities
-batt_power = 0.         # kw
-batt_hrs = 0.           #kWh/kW
-batt_energy = 60.       # kwh
+batt_power = 200.         # kw
+batt_hrs = 0.           # kWh/kW
+batt_energy = 435.       # kwh
 gen_power = 0.           # kw
-gen_tank = 0.          # gal
+gen_tank = 100.          # gal
 gen_fuel_propane = 0    # 1 = propane, 0 = diesel
-batt_power_varies = 1  # batt power such that capacity = 1h
-soc_min = 0.4
-soc_max = 0.95
+batt_power_varies = 0  # batt power such that capacity = 1h
+soc_min = 0.01
+soc_max = 0.99
 
 # outputs on/off
 superloop_file_on = 0
 output_file_on = 1
-vectors_on = 0
+vectors_on = 1
 plots_on = 0
 load_stats = 0
 debug = 0
-grid_online = 0
+debug_indexing = 0
+grid_online = 1
+
+
 
 
 # command line run options override defaults
@@ -761,8 +836,16 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-sv':
             filename_param = str(sys.argv[i+1])
 
-        elif sys.argv[i] == '-go':
+        elif sys.argv[i] == '-soc':
+            soc_min = float(sys.argv[i+1])
+            soc_max = float(sys.argv[i+2])
+
+        elif sys.argv[i] == '-gr':
             grid_online = 1
+
+        elif sys.argv[i] == '-ps':
+            peak_shaving = 1
+            demand_target = float(sys.argv[i+1])
 
         elif sys.argv[i] == '--help' :
             help_printout()
@@ -832,10 +915,6 @@ for load_scaling_factor in load_scale_vector:
                     # some data prep
                     #
 
-                    # window start and size
-                    days = 365
-                    L = days*24*4                     # length of simulation in timesteps
-
                     #
                     # Simulation Loop
                     #
@@ -851,7 +930,7 @@ for load_scaling_factor in load_scale_vector:
                         pv =    DataClass(  60.*60.,L)                   # timestep[s]
                         gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
                         bat =   BattClass(  batt_power,batt_energy,soc_max,15*60.,L)      # kW, kWh, soc0 tstep[s]
-                        grid =  GridClass(  100.,L)                    # kW
+                        grid =  GridClass(  1000.,L)                    # kW
                         microgrid = MicrogridClass()
 
                         # timestamp this data point
@@ -883,8 +962,6 @@ for load_scaling_factor in load_scale_vector:
                     max_ttff.append(np.max(ttff))
                     min_ttff.append(np.min(ttff))
                     avg_ttff.append(np.average(ttff))
-
-                    print('PV '+ str(pv_scaling_factor) +' Batt Power ' + str(batt_power) + ' Batt Energy ' + str(batt_energy) + ' Gen ' + str(gen_power) + ' 1wk Conf ' + str(len(ttff[ttff>=72])/runs))
 
                     if output_file_on:
                         if superloop_enabled:
@@ -955,29 +1032,38 @@ if plots_on:
 
     fig, ax1 = plt.subplots(figsize=(20,10))
 
-
     bat_p_kw_pos_nf = np.clip(bat.P_kw_nf,0,10000)
     bat_p_kw_neg_nf = -1*np.clip(bat.P_kw_nf,-10000,0)
 
+    grid_p_kw_pos_nf = np.clip(grid.P_kw_nf,0,10000)
+
+    battdis_line = pv.P_kw_nf + bat_p_kw_pos_nf
+    gen_line = battdis_line + gen.P_kw_nf
+    grid_line = gen_line + grid_p_kw_pos_nf
+    battchg_line = load.P_kw_nf + bat_p_kw_neg_nf
+
     ax2 = ax1.twinx()
-    ax1.plot(t_ni, pv.P_kw_nf,                             'y',    label='PV')
-    ax1.plot(t_ni, pv.P_kw_nf + bat_p_kw_pos_nf,              'b',    label='battdis+PV')              # implicit cast? x3
-    ax1.plot(t_ni, pv.P_kw_nf + bat_p_kw_pos_nf + gen.P_kw_nf,   'g',    label='gen+battdis+PV')
-    ax1.plot(t_ni, load.P_kw_nf,                           'k',    label='load')
-    ax1.plot(t_ni, load.P_kw_nf + bat_p_kw_neg_nf,            'k-*',  label='load+battchg')
-    ax2.plot(t_ni, bat.soc_nf,                             'm-',   label='soc', marker='')
 
-    ax1.fill_between(t_ni, 0, pv.P_kw_nf, facecolor='yellow')#, interpolate=True)
-    ax1.fill_between(t_ni, pv.P_kw_nf, pv.P_kw_nf+bat_p_kw_pos_nf, facecolor='blue')#, interpolate=True)
-    ax1.fill_between(t_ni, pv.P_kw_nf+bat_p_kw_pos_nf, pv.P_kw_nf + bat_p_kw_pos_nf + gen.P_kw_nf, facecolor='green')#, interpolate=True)
-    ax1.set_ylabel('between y1 and 0')
+    ax1.plot(t_ni, pv.P_kw_nf,      'y',    label='PV')
+    ax1.plot(t_ni, battdis_line,    'b',    label='batt dischg')              # implicit cast? x3
+    ax1.plot(t_ni, gen_line,        'g',    label='gen')
+    ax1.plot(t_ni, grid_line,       'm',    label='grid')
 
-    ax1.set_xlabel('h')
-    ax1.set_ylabel('kW')
+    ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load')
+    ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg')
+    ax2.plot(t_ni, bat.soc_nf,      'k.',   label='soc')
+
+    ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='yellow')#, interpolate=True)
+    ax1.fill_between(t_ni, pv.P_kw_nf,      battdis_line,   facecolor='blue')#, interpolate=True)
+    ax1.fill_between(t_ni, battdis_line,    gen_line,       facecolor='green')#, interpolate=True)
+    ax1.fill_between(t_ni, gen_line,        grid_line,      facecolor='magenta')#, interpolate=True)
+
+    ax1.set_xlabel('time [h]')
+    ax1.set_ylabel('power [kW]')
     ax2.set_ylabel('SOC')
 
-    #ax1.legend(loc='upper left')
-    ax2.legend(loc='lower left')
+    ax1.legend(loc='upper center')
+    ax2.legend(loc='upper left')
     ax1.set_xlim(1,L)
 
     #fig.tight_layout()
