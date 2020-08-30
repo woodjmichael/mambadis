@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "5.16"
+__version__ = "5.17"
 
 #
 # Versions
 #
 
+#   5.17 - split simulate_outage into _resilience and _utility_on (-sim arg), very simple utility_on dispatch, simulate_resilience almost direct from commit d36a4ca, no min/max soc, change program args, remove runtime from output file
 #   5.16 - fixed soc_update and plots, some if/else dispatch logic, prevent crazy small bat.P vals, new debug and dispatch errors
 #   5.15 - annual on-grid dispatch settings: RT batt efficiecny to 0.95, days to 365, simulation_interval to 8760
 #   5.14 - soc_max and _min now available within Run options
@@ -277,10 +278,21 @@ class BattClass:
         return soc_new
 
     def P_max_soc(me):
-        return (me.soc_prev - soc_min) * me.En_kwh * (3600.0/me.timestep)
+        return me.soc_prev * me.En_kwh * (3600.0/me.timestep) / me.eff_dischg
 
     def P_min_soc(me):
-        return (me.soc_prev - soc_max) * me.En_kwh * (3600.0/me.timestep)
+        return -1*(1 - me.soc_prev) * me.En_kwh * (3600.0/me.timestep) * me.eff_chg
+
+    def empty(me,i):
+        return (me.soc_nf[i] < 0.001)
+
+    def full(me,i):
+        return (me.soc_nf[i] > 0.999)
+
+    def over_half(me,i):
+        return (me.soc_nf[i] > 0.5)
+
+
 #
 # Faults
 #
@@ -443,10 +455,183 @@ def import_pv_data(site):
     pv_all.P_kw_nf = pv_scaling_factor * pv_all.P_kw_nf
 
 #
-# Simulate outage
+# Simulate resilience (from commit d36a4ca)
 #
 
-def simulate_outage(t_0,L):
+def simulate_resilience(t_0,L):
+
+    #
+    # Slice data
+    #
+
+
+    # temporarily store small chunk "all load" vector in "load"
+
+    # where in "all load" data this run will begin
+    m_0 = t_0 + load_all.offset    # offset usually 0
+
+    # where in "all load" data this run will end
+    m_end = m_0 + L
+
+    load.P_kw_nf = load_all.P_kw_nf[m_0:m_end]
+    load.datetime = load_all.datetime[m_0:m_end]
+
+    if debug:
+        print('LOAD')
+        print('m_0={:d}'.format(m_0) + ' m_end={:d}'.format(m_end))
+        print(load.datetime[0])
+        print(load.datetime[-1])
+        print(load.P_kw_nf.size)
+        print(len(load.datetime))
+        print('')
+
+    # temporarily store small chunk "all pv" vector in "pv"
+
+
+
+    if solar_data_inverval_15min:
+        n_0 = t_0 + pv_all.offset
+        n_end = n_0 + L
+
+    else:
+        # where in "all PV" data this run will begin
+        n_0 = t_0//4 + pv_all.offset      # offset usually 0
+
+        # where in "all load" data this run will end
+        n_end = n_0 + L//4                # offset usually 0
+
+
+
+    pv.P_kw_nf = pv_all.P_kw_nf[n_0:n_end]
+    pv.datetime = pv_all.datetime[n_0:n_end]
+
+    if debug:
+        print('PV')
+        print('n_0={:d}'.format(n_0) + ' n_end={:d}'.format(n_end))
+        print(pv.datetime[0])
+        print(pv.datetime[-1])
+        print(pv.P_kw_nf.size)
+        print(len(pv.datetime))
+        print('')
+
+    # check indexing
+    # beginning and ending date and hour should match between load and pv
+    if (load.datetime[0].day    - pv.datetime[0].day):
+        err.indexing()
+    if (load.datetime[-1].day   - pv.datetime[-1].day):
+        err.indexing()
+    if (load.datetime[0].hour   - pv.datetime[0].hour):
+        err.indexing()
+    if (load.datetime[-1].hour  - pv.datetime[-1].hour):
+        err.indexing()
+
+
+#
+# Algorithm
+#
+
+    chg = 0
+
+
+    for i in range(L):
+
+        if solar_data_inverval_15min:
+            # only increment i_pv every 4 i-increments
+            i_pv = i
+        else:
+            i_pv = i//4
+
+        LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
+
+        if not chg and not gen.tank_empty():
+
+            battpower = bat.power_request(i,LSimbalance)
+
+            LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
+
+            genpower = gen.power_request(i,LSBimbalance)
+
+            # at low soc assume to turn gen on
+            if bat.empty(i):
+                LSGimbalance = LSimbalance - gen.Pn_kw
+                battpower = bat.power_request(i,LSGimbalance)
+                LSBimbalance = LSimbalance - battpower
+                genpower = gen.power_request(i,LSBimbalance)
+                chg = 1
+
+        if chg and not gen.tank_empty():
+
+            LSGimbalance = LSimbalance - gen.Pn_kw
+            battpower = bat.power_request(i,LSGimbalance)
+            LSBimbalance = LSimbalance - battpower
+            genpower = gen.power_request(i,LSBimbalance)
+
+            # turn off gen when batt full or half full and PV turns on
+            if bat.full(i) or (bat.over_half(i) and (pv.P_kw_nf[i_pv] > 0)):
+                battpower = bat.power_request(i,LSimbalance)
+                LSBimbalance = LSimbalance - battpower
+                genpower = gen.power_request(i,LSBimbalance)
+                chg = 0
+
+        if gen.tank_empty():
+            chg = 0
+            battpower = bat.power_request(i,LSimbalance)
+            LSBimbalance = LSimbalance - battpower
+            genpower = gen.power_request(i,0)
+
+        LSBGimbalance = LSimbalance - battpower  -   genpower        # load-solar-batt-gen imbalance
+
+        # check if load is fully served
+        if(LSBGimbalance > 0.1):
+            microgrid.failed()
+        else:
+            microgrid.timer_tick()
+
+        gridpower = grid.power_request(i,LSBGimbalance)
+
+
+
+        if gridpower <= 0:
+            grid.offlineCounter += 1                        # time that microgrid services load
+
+
+        # check energy balance
+        if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
+            err.energy_balance()
+
+    time_to_grid_import = microgrid.time_to_failure/(3600./load.timestep)
+
+    # vectors
+    if vectors_on:
+        filename = './Data/Output/vectors_{}.csv'.format(filename_param)
+        with open(filename, 'w', newline='') as file:
+            output = csv.writer(file)
+            output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
+            for i in range(L):
+                if solar_data_inverval_15min:
+                    i_pv = i
+                else:
+                    i_pv = i//4 # only increment i_pv every 4 i-increments
+                l=load.P_kw_nf.item(i)
+                p=pv.P_kw_nf.item(i_pv)
+                b=bat.P_kw_nf.item(i)
+                s=bat.soc_nf.item(i)
+                g=gen.P_kw_nf.item(i)
+                G=grid.P_kw_nf.item(i)
+                d=l-p-b-g-G
+                output.writerow([i+1,l,p,b,s,g,G,d])
+
+    if debug:
+        print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
+
+    return time_to_grid_import
+
+
+#
+# Simulate utility online (from branch soc_analysis1 + mw mods)
+#
+
+def simulate_utility_on(t_0,L):
 
     #
     # Slice data
@@ -518,9 +703,6 @@ def simulate_outage(t_0,L):
 # Algorithm
 #
 
-    chg = 0
-    smart_charging_on = 0
-
     for i in range(L):
 
         if solar_data_inverval_15min:
@@ -531,110 +713,15 @@ def simulate_outage(t_0,L):
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
-        if not chg and not gen.tank_empty():                    # during a discharge cycle
-
-            if peak_shaving:
-                gpower = grid.power_request(i,min(demand_target,LSimbalance))
-            else:
-                gpower = 0
-
-            battpower = bat.power_request(i,LSimbalance - gpower)
-            gpower = grid.power_request(i,LSimbalance - battpower)
-
-            # battpower = bat.power_request(i,LSimbalance)
-            #
-            # LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
-            #
-            # if grid_online:                                     # MVG: backup power comes from grid if grid is online, gen otherwise
-            #     if LSimbalance < 35:
-            #         gpower = grid.power_request(i,LSimbalance)
-            #         LSGRimbalance = LSimbalance - gpower
-            #         battpower = bat.power_request(i,0)
-            #     else:
-            #          gpower = grid.power_request(i,LSBimbalance)
-            # else:
-            #     gpower = gen.power_request(i, LSBimbalance)
-
-            if bat.soc_prev < 0.001:                            # we only charge battery with extra PV power in this version (v5.13)
-              #  LSGimbalance = LSimbalance - gen.Pn_kw
-              #  battpower = bat.power_request(i,LSGimbalance)
-              #  LSBimbalance = LSimbalance - battpower
-              #  genpower = gen.power_request(i, LSBimbalance)
-                chg = 1
-
-        elif chg and not gen.tank_empty():                        # during a charge cycle
-
-            if peak_shaving:
-                gpower = grid.power_request(i,min(67,LSimbalance))
-            else:
-                gpower = 0
-
-            battpower = bat.power_request(i,LSimbalance - gpower)
-
-            LSBimbalance = LSimbalance - battpower
-
-            gpower = grid.power_request(i,LSBimbalance)
-
-            # battpower = bat.power_request(i,LSimbalance)
-            #
-            # LSBimbalance = LSimbalance      - battpower         # normally here we'd run gen and soak up excess with battery (v5.13)
-
-            if grid_online:
-                # if (pv.P_kw_nf[i_pv] < 1) and (load.P_kw_nf[i]<35):
-                #     print('discharging, grid online, limiting batt power/n')
-                #     gpower = grid.power_request(i,LSimbalance)#min(35,LSimbalance))
-                #     LSGRimbalance = LSimbalance - gpower
-                #     battpower = bat.power_request(i,LSGRimbalance)
-                # else:
-                    gpower = grid.power_request(i,LSBimbalance)
-            else:
-                gpower = gen.power_request(i, LSBimbalance)
-            # LSGimbalance = LSBimbalance - gen.Pn_kw
-            # battpower = bat.power_request(i,LSGimbalance)     # only charging batt from excess PV in v5.13
-            # LSBimbalance = LSimbalance - battpower
-            # genpower = gen.power_request(i, LSBimbalance)
-
-            if smart_charging_on:
-                if (bat.soc_prev == 1) or ((bat.soc_prev > 0.5) and (pv.P_kw_nf[i_pv] > 0)):
-                    battpower = bat.power_request(i,LSimbalance)
-                    LSBimbalance = LSimbalance - battpower
-                    if grid_online:
-                        gpower = grid.power_request(i, LSBimbalance)
-                    else:
-                        gpower = gen.power_request(i, LSBimbalance)
-                    chg = 0
-
-        elif gen.tank_empty():
-            chg = 0
-            battpower = bat.power_request(i,LSimbalance)
-            LSBimbalance = LSimbalance - battpower
-            if grid_online:
-                gpower = grid.power_request(i, LSBimbalance)
-            else:
-                gpower = gen.power_request(i, 0)
-
-        else:
-            err.dispatch()
+        battpower = bat.power_request(i,LSimbalance)
+        LSBimbalance = LSimbalance - battpower
+        gpower = grid.power_request(i, LSBimbalance)
 
         LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
-
-        # check if load is fully served
-        if(LSBGimbalance > 0.1):
-            microgrid.failed()
-        else:
-            microgrid.timer_tick()
-
-        if not grid_online:
-            gpower = grid.power_request(i,LSBGimbalance)
-            if gpower <= 0:
-                grid.offlineCounter += 1                        # time that microgrid services load
-
 
         # check energy balance
         if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
             err.energy_balance()
-
-    time_to_grid_import = microgrid.time_to_failure/(3600./load.timestep)
 
     # vectors
     if vectors_on:
@@ -678,9 +765,8 @@ def simulate_outage(t_0,L):
         print('sum bat chg: {:.0f}'.format(sum_batchg))
 
         print('soc final: {:.5f}'.format(soc_final))
-        print('∆soc [kwh]: {:.0f}'.format(delta_soc))
+        print('delta soc [kwh]: {:.0f}'.format(delta_soc))
 
-    return time_to_grid_import
 
 #
 # Print help
@@ -689,24 +775,30 @@ def simulate_outage(t_0,L):
 def help_printout():
     print('\nmambadis.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
     print('')
-    print('Arguments can be included in any order, but values must follow directly after keys')
+    print('Arguments are best issued in this order, with the values following directly after keys')
     print('e.g. % python mambadis.py -s fish -bp 20 be 40 .. (etc)')
     print('')
-    print('Required Command Line Arguments')
-    print(' Site name:              -s [sitename]       e.g. -s hradult')
-    print(' Battery power:          -bp [power kW]      e.g. -bp 60')
-    print(' Battery energy:         -be [energy kWh]    e.g. -be 120')
-    print(' Generator power:        -gp [power kW]      e.g. -gp 60')
-    print(' Generator tank:         -gt [size gal]      e.g. -gt 200')
+    print('Typical Command Line Arguments')
+    print(' Simulation type:        -sim [r=res | u=utility]    e.g. -sim r')
+    print(' Site name:              -s  [sitename]              e.g. -s hradult')
+    print(' Battery power:          -bp [power kW]              e.g. -bp 60')
+    print(' Battery energy:         -be [energy kWh]            e.g. -be 120')
+    print(' Battery depth of dischg:-bd [dod]                   e.g. -bd 0.95')
+    print('     -bd must come after -be because it modifies battery energy')
+    print(' Generator power:        -gp [power kW]              e.g. -gp 60')
+    print(' Generator tank:         -gt [size gal]              e.g. -gt 200')
     print('')
     print('Optional Command Line Arguments')
-    print(' Run "n" simulations:     -r [n]             e.g. -r 1   default=2920')
-    print(' Dispatch vectors ON:     -v                 e.g. -v     default=OFF')
-    print(' Load stats ON:           -l                 e.g. -l     default=OFF')
-    print(' Debug ON:                -d                 e.g. -d     default=OFF')
-    print(' Skip ahead "h" hours:    -sk [h]            e.g. -sk 24 default=OFF')
-    print(' Superloop enable:        -sl                e.g. -sl    default=OFF')
-    print(' Gen fuel is propane:     -fp                e.g. -fp    default=OFF')
+    print(' Run "n" simulations:    -r [n]                      e.g. -r 1   default=2920')
+    print(' Dispatch vectors ON:    -v                          e.g. -v     default=OFF')
+    print(' Load stats ON:          --loadstats                 e.g. --loadstats     default=OFF')
+    print(' Plots ON:               --plots                     e.g. --plots     default=OFF')
+    print(' Debug ON:               --debug                     e.g. --dedbug     default=OFF')
+    print(' Skip ahead "h" hours:   -sk [h]                     e.g. -sk 24 default=OFF')
+    print(' Superloop enable:       -sl                         e.g. -sl    default=OFF')
+    print(' Gen fuel is propane:    -gfp                        e.g. -gfp   default=OFF')
+    print(' Days to simulate:                   --days [days]   e.g. --days 3')
+    print('     --days must come after --sim because it re-modifies some variables')
     print('')
 
 
@@ -725,48 +817,41 @@ err =   FaultClass()
 # Run options
 #
 
-# /Users/mjw/Google Drive/Code/mambadis_git
-# -s badriverhc -r 1 -v -bp 200 -be 568 -gp 0 -go -soc 0.01 0.99
-# -s badriverwwtp -r 1 -v -bp 200 -be 568 -gp 0 -go -soc 0.4 0.95
-
 # data
-site = 'badriverwwtp'                    # fish, hradult, (hrfire not working)
+site = 'badriverhc'                    # fish, hradult, (hrfire not working)
 pv_scaling_factor = 1
 load_scaling_factor = 1
 filename_param = ''
 
 # simulation
-simulation_interval = 8760            # hours between simulated outages
+simulation_interval = 3            # hours between simulated outages
 runs = 365*24//simulation_interval   # number of iterations
 skip_ahead = 0                      # number of hours to skip ahead
 solar_data_inverval_15min = 1
 superloop_enabled = 0               # run matrix of battery energy and PV scale (oversize) factors
 peak_shaving = 0
-days = 365                          # length of grid outage
+days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
 
 # physical capacities
 batt_power = 200.         # kw
 batt_hrs = 0.           # kWh/kW
-batt_energy = 435.       # kwh
+batt_energy = 580.       # kwh
+dod = 1.                 # depth of discharge
 gen_power = 0.           # kw
 gen_tank = 100.          # gal
 gen_fuel_propane = 0    # 1 = propane, 0 = diesel
 batt_power_varies = 0  # batt power such that capacity = 1h
-soc_min = 0.01
-soc_max = 0.99
 
 # outputs on/off
+output_file_on = 1      # only this should be left on normally
 superloop_file_on = 0
-output_file_on = 1
-vectors_on = 1
+vectors_on = 0
 plots_on = 0
 load_stats = 0
 debug = 0
 debug_indexing = 0
-grid_online = 1
-
-
+grid_online = 0
 
 
 # command line run options override defaults
@@ -797,8 +882,33 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-be':
             batt_energy = float(sys.argv[i+1])
 
+        elif sys.argv[i] == '-bd':
+            dod = float(sys.argv[i+1])
+            batt_energy = batt_energy * dod
+
         elif sys.argv[i] == '-gp':
             gen_power = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-sim':
+            sim = str(sys.argv[i+1])
+            if sim == 'r':
+                grid_online = 0
+                simulation_interval = 3
+                runs = 365*24//simulation_interval   # number of iterations
+                days = 14                          # length of grid outage
+                L = days*24*4                     # length of simulation in timesteps
+
+            elif sim == 'u':
+                grid_online = 1
+                gen_power = 0
+                simulation_interval = 8760
+                runs = 1
+                days = 365
+                L = days*24*4                     # length of simulation in timesteps
+
+            else:
+                print('\033[1;31;1m fatality: no simulation type selected')
+                quit()
 
         elif sys.argv[i] == '-gt':
             gen_tank = float(sys.argv[i+1])
@@ -806,11 +916,18 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-v':
             vectors_on = 1
 
-        elif sys.argv[i] == '-l':
+        elif sys.argv[i] == '--plots':
+            plots_on = 1
+
+        elif sys.argv[i] == '--loadstats':
             load_stats = 1
 
-        elif sys.argv[i] == '-d':
+        elif sys.argv[i] == '--debug':
             debug = 1
+
+        elif sys.argv[i] == '--days':
+            days = int(sys.argv[i+1])
+            L = days*24*4                     # length of simulation in timesteps
 
         elif sys.argv[i] == '-sk':
             skip_ahead = int(sys.argv[i+1])
@@ -830,22 +947,11 @@ if len(sys.argv) > 1:
             strs = sys.argv[i+1:j]
             batt_energy_vector = [int(i) for i in strs]
 
-        elif sys.argv[i] == '-fp':
+        elif sys.argv[i] == '-gfp':
             gen_fuel_propane = 1
 
         elif sys.argv[i] == '-sv':
             filename_param = str(sys.argv[i+1])
-
-        elif sys.argv[i] == '-soc':
-            soc_min = float(sys.argv[i+1])
-            soc_max = float(sys.argv[i+2])
-
-        elif sys.argv[i] == '-gr':
-            grid_online = 1
-
-        elif sys.argv[i] == '-ps':
-            peak_shaving = 1
-            demand_target = float(sys.argv[i+1])
 
         elif sys.argv[i] == '--help' :
             help_printout()
@@ -856,10 +962,10 @@ if len(sys.argv) > 1:
 #
 
 if superloop_enabled:
-    pv_scale_vector = [1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+    pv_scale_vector = [1, 1.25, 1.5, 1.75, 2.0]
     load_scale_vector = [1]
-    batt_power_vector = [8,16,24,30,60,90]
-    batt_hrs_vector = [1,2,3,4,5,6]
+    batt_power_vector = [30,60,90]
+    batt_hrs_vector = [1]
     gen_power_vector = [0]
 else:
     pv_scale_vector = [pv_scaling_factor]
@@ -929,7 +1035,7 @@ for load_scaling_factor in load_scale_vector:
                         load =  DataClass(  15.*60.,L)                 # timestep[s]
                         pv =    DataClass(  60.*60.,L)                   # timestep[s]
                         gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
-                        bat =   BattClass(  batt_power,batt_energy,soc_max,15*60.,L)      # kW, kWh, soc0 tstep[s]
+                        bat =   BattClass(  batt_power,batt_energy,1,15*60.,L)      # kW, kWh, soc0 tstep[s]
                         grid =  GridClass(  1000.,L)                    # kW
                         microgrid = MicrogridClass()
 
@@ -939,12 +1045,17 @@ for load_scaling_factor in load_scale_vector:
                         #
                         # run the dispatch simulation
                         #
-                        results.time_to_grid_import_h_nf[i] = simulate_outage(t0,L)
+                        if not grid_online:
+                            results.time_to_grid_import_h_nf[i] = simulate_resilience(t0,L)
+                            # calculate one last result
+                            results.onlineTime_h_ni[i] = grid.offlineCounter/4.
+                        elif grid_online:
+                            simulate_utility_on(t0,L)
+                        else:
+                            print('\033[1;31;1m fatality: no dispatch type selected')
+                            quit()
 
-                        # calculate one last result
-                        results.onlineTime_h_ni[i] = grid.offlineCounter/4.
-
-                    # keep track of battery power and pv scaling
+                    # keep track of asset sizes and pv scaling
                     batt_energy_vals.append(batt_energy)
                     pv_scale_vals.append(pv_scaling_factor)
                     load_scale_vals.append(load_scaling_factor)
@@ -973,7 +1084,6 @@ for load_scaling_factor in load_scale_vector:
                             output.writerow(['Site',site])
                             output.writerow(['Mambadis.py v',__version__])
                             output.writerow(['Datetime',dt.datetime.now()])
-                            output.writerow(['Runtime [s]',results.code_runtime_s])
                             output.writerow(['Simulated outage duration [days]',days])
                             output.writerow(['Outages simulated',runs])
                             output.writerow([])
@@ -1002,6 +1112,7 @@ for load_scaling_factor in load_scale_vector:
 t_script_finished_dt = dt.datetime.now()
 t_elapsed_dt = t_script_finished_dt - t_script_begin_dt
 results.code_runtime_s = t_elapsed_dt.total_seconds()
+
 
 
 #
