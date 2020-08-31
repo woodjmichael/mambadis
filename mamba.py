@@ -1,5 +1,4 @@
-# ***OBSOLETE: see new file 'mamba.py'***
-# mambadis.py
+# mamba.py
 # Fast economic dispatch simulation of PV-battery-generator migrogrids
 
 # python 3.7
