@@ -1,17 +1,18 @@
 # mamba.py
-# Fast economic dispatch simulation of PV-battery-generator migrogrids
+# Fast economic dispatch simulation of PV-battery-generator microgrids
 
 # python 3.7
 
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.1"
+__version__ = "6.2"
 
 #
 # Versions
 #
 
+#   6.2 - variable soc0 resilience simulation uses soc 35040 from previous utility sim (automatically checks for vectors file in ./Data/Output with appropriate name), update diesel fuel curves
 #   6.1 - **change filename**, peak shaving includes monthly demand targets (hard coded), switch to arbitrage on weekends
 # 6.0 - working peak shaving with annual target, new load line on plot
 #   5.17 - split simulate_outage into _resilience and _utility_on (-sim arg), very simple utility_on dispatch, simulate_resilience almost direct from commit d36a4ca, no min/max soc, change program args, remove runtime from output file
@@ -69,6 +70,7 @@ __version__ = "6.1"
 ################################################################################
 
 import sys
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import csv
@@ -364,17 +366,32 @@ def find_load_pv_offset():
 #
 
 def lookup_fuel_curve_coeffs(power, gen_fuel_propane):
+    # diesel
     # coeffs = [fuel_curve_coeff_A, fuel_curve_coeff_B]
-    if power < 25:      coeffs = [0.060 , 0.3]
-    elif power < 35:    coeffs = [0.067, 1.23]
-    elif power < 50:    coeffs = [0.080, 1.52]   # this was 0.8 before, a real issue for any 35 ≤ Pg < 50
-    elif power < 67:    coeffs = [0.067, 1.73]
-    elif power < 87:    coeffs = [0.071, 2.33]
-    elif power < 120:   coeffs = [0.064, 2.54]
-    elif power < 180 and gen_fuel_propane: coeffs = [0.1441,0.665]
+    if not gen_fuel_propane:
+        if power < 25:      coeffs = [0.0680, 0.250] # 20 kW
+        elif power < 35:    coeffs = [0.0720, 0.750] # 30 kW
+        elif power < 50:    coeffs = [0.0810, 0.750] # 40 kW
+        elif power < 67:    coeffs = [0.0660, 0.850] # 60 kW
+        elif power < 87:    coeffs = [0.0656, 1.050] # 75 kW
+        elif power < 120:   coeffs = [0.0644, 0.950] # 100 KW
+        elif power < 280:   coeffs = [0.0648, 1.350] # 200 KW
+        elif power < 520:   coeffs = [0.0655, 2.050] # 400 KW
+        else:
+            coeffs = [0.0655, 2.05]
+            err.gen_fuel_coeffs()
+
+    # propane
+    elif gen_fuel_propane:
+        if power < 180:
+            coeffs = [0.1441,0.665]
+        else:
+            coeffs = [0.1441,0.665]
+            err.gen_fuel_coeffs()
     else:
-        coeffs = [0.064, 2.54]
+        coeffs = [0.0655, 2.050]
         err.gen_fuel_coeffs()
+
     return coeffs
 
 
@@ -457,30 +474,14 @@ def import_pv_data(site):
     pv_all.P_kw_nf = pv_scaling_factor * pv_all.P_kw_nf
 
 #
-# Import vector of months and days of week
+# Import 35040 of soc from annual simulation
 #
 
-def import_load_data(site, load_stats):
-    filename = './Data/Load/' + site + '_load.csv'
-    with open(filename,'r') as f:
-        datacsv = list(csv.reader(f, delimiter=","))
-        del datacsv[0]
-        t = []
-        p = []
-        for line in datacsv:
-            newtxt = line[0] #hr fire .split('P')[0][0:-1]
-            newval = dt.datetime.strptime(newtxt, '%Y/%m/%d %H:%M')
-            t.append(newval)
-    load_all.datetime = t + t
-
+def import_soc_35040(site):
+    filename = './Data/Output/vectors_' + site + '_35040.csv'
     my_data = np.genfromtxt(filename, delimiter=',')
-    md = load_scaling_factor * my_data[1:,1]
-    load_all.P_kw_nf = np.concatenate((md,md),axis=0)
-
-    if load_stats:
-        print('max load [kw] = {:.1f}'.format(np.amax(load_all.P_kw_nf)))
-        print('avg load [kw] = {:.1f}'.format(np.average(load_all.P_kw_nf)))
-        print('min load [kw] = {:.1f}'.format(np.amin(load_all.P_kw_nf)))
+    md = my_data[1:,4]
+    dispatch_all.soc_nf = np.concatenate((md,md),axis=0)
 
 #
 # Simulate resilience (from commit d36a4ca)
@@ -491,7 +492,6 @@ def simulate_resilience(t_0,L):
     #
     # Slice data
     #
-
 
     # temporarily store small chunk "all load" vector in "load"
 
@@ -554,9 +554,14 @@ def simulate_resilience(t_0,L):
         err.indexing()
 
 
-#
-# Algorithm
-#
+    #
+    # Algorithm
+    #
+
+    # begin battery with the soc from a previous year-long grid-connected simulation
+    if vary_soc:
+        bat.soc0 = dispatch_all.soc_nf[t_0]
+        bat.soc_prev = bat.soc0
 
     chg = 0
 
@@ -901,6 +906,7 @@ peak_shaving = 0
 demand_target = 0
 days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
+vary_soc = 0
 
 # physical capacities
 batt_power = 200.         # kw
@@ -1040,6 +1046,9 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-sv':
             filename_param = str(sys.argv[i+1])
 
+        elif sys.argv[i] == '--varysoc':
+            vary_soc = 1
+
         elif sys.argv[i] == '--help' :
             help_printout()
             quit()
@@ -1101,8 +1110,13 @@ for load_scaling_factor in load_scale_vector:
                     load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
                     pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
                     results =   DataClass(3.*60.*60., runs)
+                    dispatch_all =  DataClass(15.*60., 2*46333)  # timestep[s]
                     import_load_data(site, load_stats)
                     import_pv_data(site)
+                    if not grid_online and os.path.isfile('./Data/Output/vectors_' + site + '_35040.csv'):
+                        vary_soc = 1
+                        import_soc_35040(site)
+
 
                     #
                     # some data prep
@@ -1169,7 +1183,7 @@ for load_scaling_factor in load_scale_vector:
                         with open(filename, 'w', newline='') as file:
                             output = csv.writer(file)
                             output.writerow(['Site',site])
-                            output.writerow(['Mambadis.py v',__version__])
+                            output.writerow(['Mamba.py v',__version__])
                             output.writerow(['Datetime',dt.datetime.now()])
                             output.writerow(['Simulated outage duration [days]',days])
                             output.writerow(['Outages simulated',runs])
