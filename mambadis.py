@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "5.17"
+__version__ = "6.0"
 
 #
 # Versions
 #
 
+# 6.0 - first attempt at peak shaving
 #   5.17 - split simulate_outage into _resilience and _utility_on (-sim arg), very simple utility_on dispatch, simulate_resilience almost direct from commit d36a4ca, no min/max soc, change program args, remove runtime from output file
 #   5.16 - fixed soc_update and plots, some if/else dispatch logic, prevent crazy small bat.P vals, new debug and dispatch errors
 #   5.15 - annual on-grid dispatch settings: RT batt efficiecny to 0.95, days to 365, simulation_interval to 8760
@@ -713,9 +714,33 @@ def simulate_utility_on(t_0,L):
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
-        battpower = bat.power_request(i,LSimbalance)
-        LSBimbalance = LSimbalance - battpower
-        gpower = grid.power_request(i, LSBimbalance)
+        if not peak_shaving:
+            battpower = bat.power_request(i,LSimbalance)
+            LSBimbalance = LSimbalance - battpower
+            gpower = grid.power_request(i, LSBimbalance)
+
+        elif peak_shaving:
+
+            # dispatch battery to reduce demand
+            if LSimbalance > demand_target:
+                battpower = bat.power_request(i,LSimbalance - demand_target)
+                LSBimbalance = LSimbalance - battpower
+                gpower = grid.power_request(i,LSBimbalance)
+
+            # battery not needed, demand is low enough
+            elif LSimbalance <= demand_target and LSimbalance > 0:
+                battpower = bat.power_request(i,0)
+                gpower = grid.power_request(i,LSimbalance)
+
+            # charge battery from PV
+            elif LSimbalance <= 0:
+                battpower = bat.power_request(i,LSimbalance)
+                LSBimbalance = LSimbalance - battpower
+                gpower = grid.power_request(i,LSBimbalance)
+        else:
+            print('error: to peak shave or not?')
+            quit()
+
 
         LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
 
@@ -757,6 +782,8 @@ def simulate_utility_on(t_0,L):
         soc_final = bat.soc_nf.item(L-1)
         delta_soc = bat.En_kwh * (1 - soc_final)
 
+        max_grid = np.max(grid.P_kw_nf)
+
         print('sum load: {:.0f}'.format(sum_load))
         print('sum pv: {:.0f}'.format(sum_pv))
         print('sum grid: {:.0f}'.format(sum_grid))
@@ -766,6 +793,8 @@ def simulate_utility_on(t_0,L):
 
         print('soc final: {:.5f}'.format(soc_final))
         print('delta soc [kwh]: {:.0f}'.format(delta_soc))
+
+        print('max grid [kw]: {:.0f}'.format(max_grid))
 
 
 #
@@ -830,6 +859,7 @@ skip_ahead = 0                      # number of hours to skip ahead
 solar_data_inverval_15min = 1
 superloop_enabled = 0               # run matrix of battery energy and PV scale (oversize) factors
 peak_shaving = 0
+demand_target = 0
 days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
 
@@ -888,6 +918,10 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '-gp':
             gen_power = float(sys.argv[i+1])
+
+        elif sys.argv[i] == '-ps':
+            peak_shaving = 1
+            demand_target = float(sys.argv[i+1])
 
         elif sys.argv[i] == '-sim':
             sim = str(sys.argv[i+1])
@@ -1153,6 +1187,8 @@ if plots_on:
     grid_line = gen_line + grid_p_kw_pos_nf
     battchg_line = load.P_kw_nf + bat_p_kw_neg_nf
 
+    grid_line_dis = np.clip(load.P_kw_nf - pv.P_kw_nf,0,10000) - bat_p_kw_pos_nf
+
     ax2 = ax1.twinx()
 
     ax1.plot(t_ni, pv.P_kw_nf,      'y',    label='PV')
@@ -1162,6 +1198,7 @@ if plots_on:
 
     ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load')
     ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg')
+    ax1.plot(t_ni, grid_line_dis,   'k--',  label='load w/ pv & battdis')
     ax2.plot(t_ni, bat.soc_nf,      'k.',   label='soc')
 
     ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='yellow')#, interpolate=True)
@@ -1176,6 +1213,7 @@ if plots_on:
     ax1.legend(loc='upper center')
     ax2.legend(loc='upper left')
     ax1.set_xlim(1,L)
+    ax2.set_ylim(0,1)
 
     #fig.tight_layout()
     plt.show()
