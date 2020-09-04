@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.3"
+__version__ = "6.4"
 
 #
 # Versions
 #
 
+#   6.4 - more filename reworks, adding an optional dummy var to all output files and directories to specify any individual call
 #   6.3 - new output directory, change "output_" file to "resilience_", change "superloop_" filename to "resilience_superloop_", "add "sim_meta_" file, change which files are output when
 #   6.2 - variable soc0 resilience simulation uses soc 35040 from previous utility sim (automatically checks for vectors file in ./Data/Output with appropriate name), update diesel fuel curves
 #   6.1 - **change filename**, peak shaving includes monthly demand targets (hard coded), switch to arbitrage on weekends
@@ -1067,7 +1068,7 @@ if len(sys.argv) > 1:
 # Create output directory
 #
 now = dt.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
-output_dir = './Data/Output/' + site + '_' + str(now)
+output_dir = './Data/Output/' + site + '_' + str(now) + '_' + filename_param
 if not os.path.exists(output_dir):
     os.mkdir(output_dir)
 else:
@@ -1135,7 +1136,7 @@ for load_scaling_factor in load_scale_vector:
                     import_pv_data(site)
 
                     # look for dispatch file containing soc 35040 - use if available
-                    soc_filename = './Data/Dispatch/soc_' + site + '_35040.csv'
+                    soc_filename = './Data/Dispatch/soc_' + site + '_35040_' + filename_param + '.csv'
                     if not grid_online and os.path.isfile(soc_filename):
                         vary_soc = 1
                         import_soc_35040(site)
@@ -1204,7 +1205,7 @@ for load_scaling_factor in load_scale_vector:
 
                     if output_sim_meta:
                         if superloop_enabled:
-                              filename = output_dir + '/sim_meta_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
+                              filename = output_dir + '/sim_meta_{:}_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, filename_param, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = output_dir + '/sim_meta_{}_{}.csv'.format(site, filename_param)
                         with open(filename, 'w', newline='') as file:
@@ -1228,7 +1229,7 @@ for load_scaling_factor in load_scale_vector:
 
                     if output_resilience:
                         if superloop_enabled:
-                              filename = output_dir + '/resilience_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
+                              filename = output_dir + '/resilience_{:}_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, filename_param, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = output_dir + '/resilience_{}_{}.csv'.format(site, filename_param)
                         with open(filename, 'w', newline='') as file:
@@ -1275,7 +1276,7 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 #
 
 if superloop_enabled:
-    filename = output_dir + '/resilience_superloop.csv'
+    filename = output_dir + '/resilience_superloop_{:}_{:}.csv'.format(site, filename_param)
     with open(filename, 'w', newline='') as file:
         output = csv.writer(file)
         output.writerow(['Site',site])
