@@ -1,6 +1,6 @@
 # Quickstart
 
-mamba.py v6.1 | Michael Wood | 2020.8.31
+mamba.py v6.4 | Michael Wood | 2020.9.10
 
 
 
@@ -34,6 +34,24 @@ All the commands in this doc are from a normal terminal shell.
 
 Input load and solar data should be 15-minute interval, but if that’s not available we can flip a switch. In general site names should match the load and solar datafiles in the I-hope-obvious way.
 
+Mamba creates datetime stamps for output data where the time instant is the **beginning** of the 15-minute interval for which the data is valid.
+
+*Example:*
+
+  ```
+  Datetime,load kW
+  2019/1/1 00:00, 21.6
+  2019/1/1 00:15, 18.9
+  ```
+
+  *The above 21.6 kW of load is valid from 2019/1/1 0:00:00 to 2019/1/1 00:14:59.999... and then at exactly 2019/1/1 00:15:00 the load changes to 18.9.*
+
+- We sometimes call this the "Beginning of Period (BOP)" convention.
+- Redcloud and the associated LINKED RESULTS files use "End of Period (EOP)" convention.
+
+This shouldn't matter, if both programs make their calculations knowing their own convention, and the user knows the convention of the outputs.
+
+But for the **input data** it's important to use **consistent** convention data. So find either **all BOP** or **all EOP** data. One way to do this is pull all your input data from a LINKED RESULTS file.
 
 
 ## Running
