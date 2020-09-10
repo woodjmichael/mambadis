@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.3"
+__version__ = "6.4"
 
 #
 # Versions
 #
 
+#   6.4 - demand debug, plot tweaks, no weekend arb in peak shaving, vectors output file now has datetime in col 1
 #   6.3 - new output directory, change "output_" file to "resilience_", change "superloop_" filename to "resilience_superloop_", "add "sim_meta_" file, change which files are output when
 #   6.2 - variable soc0 resilience simulation uses soc 35040 from previous utility sim (automatically checks for vectors file in ./Data/Output with appropriate name), update diesel fuel curves
 #   6.1 - **change filename**, peak shaving includes monthly demand targets (hard coded), switch to arbitrage on weekends
@@ -656,10 +657,9 @@ def simulate_resilience(t_0,L):
                 g=gen.P_kw_nf.item(i)
                 G=grid.P_kw_nf.item(i)
                 d=l-p-b-g-G
-                output.writerow([i+1,l,p,b,s,g,G,d])
+                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
 
-    if debug:
-        print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
+    if debug: print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
 
     return time_to_grid_import
 
@@ -736,9 +736,11 @@ def simulate_utility_on(t_0,L):
         err.indexing()
 
 
-#
-# Algorithm
-#
+
+
+    #
+    # Algorithm
+    #
 
     for i in range(L):
 
@@ -749,7 +751,7 @@ def simulate_utility_on(t_0,L):
             day_of_week = load.datetime[i].weekday()
 
             if day_of_week > 4: # saturday=5 sunday=6
-                weekend = 1
+                weekend = 0 #1 # disable for now
             else:
                 weekend = 0
 
@@ -786,6 +788,8 @@ def simulate_utility_on(t_0,L):
                 battpower = bat.power_request(i,LSimbalance)
                 LSBimbalance = LSimbalance - battpower
                 gpower = grid.power_request(i,LSBimbalance)
+
+
         else:
             print('error: to peak shave or not?')
             quit()
@@ -815,7 +819,7 @@ def simulate_utility_on(t_0,L):
                 g=gen.P_kw_nf.item(i)
                 G=grid.P_kw_nf.item(i)
                 d=l-p-b-g-G
-                output.writerow([i+1,l,p,b,s,g,G,d])
+                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
 
     if debug_energy:
         sum_batdis = np.sum(np.clip(bat.P_kw_nf,0,10000))/4
@@ -841,6 +845,16 @@ def simulate_utility_on(t_0,L):
         print('delta soc [kwh]: {:.0f}'.format(delta_soc))
 
         print('max grid [kw]: {:.0f}'.format(max_grid))
+
+    if debug_demand:
+        peak_demand = np.max(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
+        peak_demand_index = np.argmax(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
+        print('demand target [kW]: {:.1f}'.format(demand_target))
+        print('peak demand [kW]: {:.1f}'.format(peak_demand))
+        print('peak demand time: {}'.format(load.datetime[peak_demand_index]))
+        print('peak demand index [tstep]: {:d}'.format(peak_demand_index))
+        print('period start: {}'.format(load.datetime[0]))
+        print('period end:   {}'.format(load.datetime[-1]))
 
     if debug:
         print('checksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
@@ -933,8 +947,10 @@ output_resilience = 0
 output_vectors = 0
 plots_on = 0
 load_stats = 0
+weekend_arb_off = 0
 debug = 0
 debug_energy = 0
+debug_demand = 0
 debug_indexing = 0
 debug_res = 0
 
@@ -1022,6 +1038,10 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '--debug_energy':
             debug = 1
             debug_energy = 1
+
+        elif sys.argv[i] == '--debug_demand':
+            debug = 1
+            debug_demand = 1
 
         elif sys.argv[i] == '--debug_indexing':
             debug = 1
@@ -1293,6 +1313,7 @@ if superloop_enabled:
         for i in range(len(max_ttff)):
             output.writerow([load_scale_vals[i],pv_scale_vals[i],batt_energy_vals[i], batt_power_vals[i], batt_hrs_vals[i], gen_power_vals[i], conf_72h[i],conf_336h[i],min_ttff[i],avg_ttff[i],max_ttff[i]])
 
+
 # plots
 if plots_on:
     t_ni = np.arange(1., L+1., 1.)
@@ -1313,32 +1334,40 @@ if plots_on:
 
     ax2 = ax1.twinx()
 
-    ax1.plot(t_ni, pv.P_kw_nf,      'y',    label='PV')
-    ax1.plot(t_ni, battdis_line,    'b',    label='batt dischg')              # implicit cast? x3
-    ax1.plot(t_ni, gen_line,        'g',    label='gen')
-    ax1.plot(t_ni, grid_line,       'm',    label='grid')
+    ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load', linewidth=0.1)
+    ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg', linewidth=0.5)
+    ax1.plot(t_ni, grid_line_dis,   'k:',  label='grid import',linewidth=2.)
+    #ax2.plot(t_ni, bat.soc_nf,      'k.',   label='soc', markersize=0.0)
 
-    ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load')
-    ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg')
-    ax1.plot(t_ni, grid_line_dis,   'k--',  label='load - pv - battdis')
-    ax2.plot(t_ni, bat.soc_nf,      'k.',   label='soc')
+    if debug_demand:
+        m = load.datetime[i].month
+        ax1.plot([1, L], [demand_targets[m], demand_targets[m]], 'k', label='demand target', linewidth=2.)
 
-    ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='yellow')#, interpolate=True)
-    ax1.fill_between(t_ni, pv.P_kw_nf,      battdis_line,   facecolor='blue')#, interpolate=True)
-    ax1.fill_between(t_ni, battdis_line,    gen_line,       facecolor='green')#, interpolate=True)
-    ax1.fill_between(t_ni, gen_line,        grid_line,      facecolor='magenta')#, interpolate=True)
+    ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='yellow', label='pv')#, interpolate=True)
+    ax1.fill_between(t_ni, pv.P_kw_nf,      battdis_line,   facecolor='blue', label='batt dischg')#, interpolate=True)
+    ax1.fill_between(t_ni, battdis_line,    gen_line,       facecolor='green', label='gen')#, interpolate=True)
+    ax1.fill_between(t_ni, gen_line,        grid_line,      facecolor='magenta', label='grid')#, interpolate=True)
 
-    ax1.set_xlabel('time [h]')
+    bat_soc = np.multiply(bat.soc_nf,1.1*np.max(pv.P_kw_nf))
+    ax1.fill_between(t_ni, 0,               bat_soc,        facecolor=(.85, 1., 1.), zorder=0, label='soc')#, interpolate=True)
+
+    ax1.set_xlabel('timestep')
     ax1.set_ylabel('power [kW]')
     ax2.set_ylabel('SOC')
 
-    ax1.legend(loc='upper left')
-    ax2.legend(loc='upper right')
+    ax1.legend()
     ax1.set_xlim(1,L)
+    ax1.set_ylim(1,1.1*np.max(pv.P_kw_nf))
     ax2.set_ylim(0,1)
+
 
     #fig.tight_layout()
     plt.show()
+
+    if debug_demand:
+        plt.plot(load.datetime,grid.P_kw_nf)
+        plt.show()
+
 
 
 # errors
