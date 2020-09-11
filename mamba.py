@@ -6,13 +6,16 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.4"
+__version__ = "6.3"
 
 #
 # Versions
 #
 
+<<<<<<< HEAD
 #   6.4 - more filename reworks, adding an optional dummy var to all output files and directories to specify any individual call
+=======
+>>>>>>> parent of b84089d... 6.4 - demand debug, plot tweaks, no weekend arb in peak shaving, vectors output file now has datetime in col 1
 #   6.3 - new output directory, change "output_" file to "resilience_", change "superloop_" filename to "resilience_superloop_", "add "sim_meta_" file, change which files are output when
 #   6.2 - variable soc0 resilience simulation uses soc 35040 from previous utility sim (automatically checks for vectors file in ./Data/Output with appropriate name), update diesel fuel curves
 #   6.1 - **change filename**, peak shaving includes monthly demand targets (hard coded), switch to arbitrage on weekends
