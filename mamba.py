@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.7"
+__version__ = "6.8"
 
 #
 # Versions
 #
 
+#   6.8 - first peak shaving with battery charging from grid, plots tweak
 #   6.7 - merge failed, re-comitting known-good v6.6
 #   6.6 - import demand targets, debug printouts, dispatch plot tweaks, quickstart input data conventions
 #   6.5 - new demand targets from linked results 090820
@@ -709,13 +710,9 @@ def simulate_utility_on(t_0,L):
         print('')
 
     # temporarily store small chunk "all pv" vector in "pv"
-
-
-
     if solar_data_inverval_15min:
         n_0 = t_0 + pv_all.offset
         n_end = n_0 + L
-
     else:
         # where in "all PV" data this run will begin
         n_0 = t_0//4 + pv_all.offset      # offset usually 0
@@ -782,31 +779,37 @@ def simulate_utility_on(t_0,L):
             LSBimbalance = LSimbalance - battpower
             gpower = grid.power_request(i, LSBimbalance)
 
-        # peak shaving
-        elif peak_shaving:
+        # peak shaving with charging batt from grid
+        elif peak_shaving and grid_charging:
 
-            # dispatch battery to reduce demand
+            battpower = bat.power_request(i,LSimbalance - demand_target)
+            LSBimbalance = LSimbalance - battpower
+            gpower = grid.power_request(i,LSBimbalance)
+
+        # fringe case: peak shaving without charging batt from grid
+        elif peak_shaving and not grid_charging:
+
+            # demand is too high: dispatch battery
             if LSimbalance > demand_target:
                 battpower = bat.power_request(i,LSimbalance - demand_target)
                 LSBimbalance = LSimbalance - battpower
                 gpower = grid.power_request(i,LSBimbalance)
 
-            # battery not needed, demand is low enough
+            # demand is below threshold, do nothing
             elif LSimbalance <= demand_target and LSimbalance > 0:
                 battpower = bat.power_request(i,0)
-                gpower = grid.power_request(i,LSimbalance)
+                LSBimbalance = LSimbalance - battpower
+                gpower = grid.power_request(i,LSBimbalance)
 
-            # charge battery from PV
+            # excess solar: charge battery from solar
             elif LSimbalance <= 0:
                 battpower = bat.power_request(i,LSimbalance)
                 LSBimbalance = LSimbalance - battpower
                 gpower = grid.power_request(i,LSBimbalance)
 
-
         else:
             print('error: to peak shave or not?')
             quit()
-
 
         LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
 
@@ -894,26 +897,29 @@ def simulate_utility_on(t_0,L):
                 month += 1
             if grid.P_kw_nf[i] > demand_ratchet:
                 demand_ratchet = grid.P_kw_nf[i]
+
         results.demands = np.array(demands)
-        results.demand_errors = results.demands - demand_targets.monthly
-        print('demand errors [kW]:{}'.format(results.demand_errors))
-        print('demands (calendar) [kW]:')
-        for val in results.demands: print(val)
+        print('\ndemands (calendar) [kW]:')
+        for val in results.demands:
+            print(val)
+
+        print('\ndemand errors [kW]:')
+        for i in range(len(results.demands)):
+            print (results.demands[i] - demand_targets.monthly[i])
 
     # print checksum
     if debug:
         print('\nchecksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
-
 
 #
 # Print help
 #
 
 def help_printout():
-    print('\nmambadis.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
+    print('\nmamba.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
     print('')
     print('Arguments are best issued in this order, with the values following directly after keys')
-    print('e.g. % python mambadis.py -s fish -bp 20 be 40 .. (etc)')
+    print('e.g. % python mamba.py -s fish -bp 20 be 40 .. (etc)')
     print('')
     print('Typical Command Line Arguments')
     print(' Simulation type:        -sim [r=res | ua = utility arbitrage | up = utility peak shaving]    e.g. -sim r')
@@ -926,17 +932,17 @@ def help_printout():
     print('Optional Command Line Arguments')
     print(' Run "n" simulations:    -r [n]                      e.g. -r 1   default=2920')
     print(' Dispatch vectors ON:    -v                          e.g. -v     default=OFF')
-    print(' Battery vector ON:    -vb                           e.g. -vb    default=OFF')
+    print(' Battery vector ON:      -vb                           e.g. -vb    default=OFF')
     print(' Load stats ON:          --loadstats                 e.g. --loadstats     default=OFF')
-    print(' Plots ON:               --plots                     e.g. --plots     default=OFF')
     print(' Skip ahead "h" hours:   -sk [h]                     e.g. -sk 24 default=OFF')
     print(' Superloop enable:       -sl                         e.g. -sl    default=OFF')
     print(' Gen fuel is propane:    -gfp                        e.g. -gfp   default=OFF')
-    print(' Days to simulate:                   --days [days]   e.g. --days 3')
+    print(' Days to simulate:       --days [days]               e.g. --days 3')
     print('     --days must come after --sim because it re-modifies some variables')
     print(' Battery depth of dischg:-bd [dod]                   e.g. -bd 0.95')
     print('     -bd must come after -be because it modifies battery energy')
     print('     careful: -bd just changes the battery energy, so soc will still be 0-100%')
+    print(' Plots ON (option to plot normal or utility first):    --plots [ | u]                     e.g. --plots     default=OFF')
     print('')
 
 
@@ -971,6 +977,7 @@ solar_data_inverval_15min = 1
 superloop_enabled = 0               # run matrix of battery energy and PV scale (oversize) factors
 grid_online = 0
 peak_shaving = 0
+grid_charging = 0
 demand_target = 0
 days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
@@ -1061,6 +1068,7 @@ if len(sys.argv) > 1:
 
             elif sim == 'up':
                 grid_online = 1
+                grid_charging = 1
                 gen_power = 0
                 simulation_interval = 8760
                 runs = 1
@@ -1084,6 +1092,15 @@ if len(sys.argv) > 1:
 
         elif sys.argv[i] == '--plots':
             plots_on = 1
+            plot_pv_first = 1
+            plot_grid_first = 0
+
+            if i+1 < len(sys.argv):         # make sure there are more args
+                type = str(sys.argv[i+1])
+
+                if type == 'u':
+                    plot_pv_first = 0
+                    plot_grid_first = 1
 
         elif sys.argv[i] == '--loadstats':
             load_stats = 1
@@ -1091,6 +1108,7 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '--debug':
 
             debug = 1                       # basic debug only
+            __version__ = __version__ + '_debug'
 
             if i+1 < len(sys.argv):         # make sure there are more args
                 bug = str(sys.argv[i+1])
@@ -1375,43 +1393,48 @@ if superloop_enabled:
 
 # plots
 if plots_on:
-    t_ni = np.arange(1., L+1., 1.)
 
+    # plot type
     fig, ax1 = plt.subplots(figsize=(20,8.5))
-
-    bat_p_kw_pos_nf = np.clip(bat.P_kw_nf,0,10000)
-    bat_p_kw_neg_nf = -1*np.clip(bat.P_kw_nf,-10000,0)
-
-    grid_p_kw_pos_nf = np.clip(grid.P_kw_nf,0,10000)
-
-    battdis_line = pv.P_kw_nf + bat_p_kw_pos_nf
-    gen_line = battdis_line + gen.P_kw_nf
-    grid_line = gen_line + grid_p_kw_pos_nf
-    battchg_line = load.P_kw_nf + bat_p_kw_neg_nf
-
-    grid_line_dis = np.clip(load.P_kw_nf - pv.P_kw_nf,0,10000) - bat_p_kw_pos_nf
-
     ax2 = ax1.twinx()
 
-    if debug_demand:
+    # main vectors
+    t = np.arange(1., L+1., 1.)
+    p = pv.P_kw_nf
+    l = load.P_kw_nf
+    g = gen.P_kw_nf
+    d = np.clip(bat.P_kw_nf,0,10000)
+    c = -1*np.clip(bat.P_kw_nf,-10000,0)
+    u = np.clip(grid.P_kw_nf,0,10000)
+
+    # consider putting in a horizontal demand target line
+    if peak_shaving and debug_demand:
         m = load.datetime[i].month
         ax1.plot([1, L], [demand_targets.monthly[m-1], demand_targets.monthly[m-1]], 'r', label='demand target', linewidth=.5)
 
-    ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load', linewidth=0.5)
-    ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg', linewidth=0.5)
-    ax1.plot(t_ni, grid_line_dis,   'r--',  label='grid import',linewidth=1.)
-    ax2.plot(t_ni, bat.soc_nf,      'b:',   label='soc', linewidth=0.5)
+    # plot load and soc
+    ax1.plot(t, l,           'k',    label='load', linewidth=0.5)
+    ax1.plot(t, l+c,         'k--',  label='load + batt charge', linewidth=0.5)
+    ax2.plot(t, bat.soc_nf,  'b:',   label='soc', linewidth=0.5)
 
+    # area plots
+    if plot_pv_first and grid_online:
+        ax1.plot(t, u,       'r--',  label='grid import',linewidth=1.)
+        ax1.fill_between(t, 0,      p,     facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,   facecolor='lightblue',   label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+u, facecolor='pink',        label='grid')#, interpolate=True)
 
-    ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='lightyellow', label='pv')#, interpolate=True)
-    ax1.fill_between(t_ni, pv.P_kw_nf,      battdis_line,   facecolor='lightblue', label='batt dischg')#, interpolate=True)
-    ax1.fill_between(t_ni, battdis_line,    gen_line,       facecolor='lightgreen', label='gen')#, interpolate=True)
-    ax1.fill_between(t_ni, gen_line,        grid_line,      facecolor='pink', label='grid')#, interpolate=True)
+    # area plots
+    elif plot_pv_first and not grid_online:
+        ax1.fill_between(t, 0,      p,          facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,        facecolor='lightblue',  label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+g,      facecolor='lightgreen', label='gen')#, interpolate=True)
 
-    bat_soc = np.multiply(bat.soc_nf,1.1*np.max(pv.P_kw_nf))
-
-    # neat idea: see soc as an area plot (but can't see low SOC.. obscured by dispatch)
-    #ax1.fill_between(t_ni, 0,               bat_soc,        facecolor=(.85, 1., 1.), zorder=0, label='soc')#, interpolate=True)
+    # area plots
+    elif plot_grid_first and grid_online:
+        ax1.fill_between(t, 0,       u,     facecolor='pink', label='grid')#, interpolate=True)
+        ax1.fill_between(t, u,       u+p,   facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, u+p,     u+p+d, facecolor='lightblue', label='batt discharge')#, interpolate=True)
 
     ax1.set_xlabel('timestep')
     ax1.set_ylabel('power [kW]')
@@ -1423,20 +1446,18 @@ if plots_on:
     ax1.set_ylim(1,1.1*np.max(pv.P_kw_nf))
     ax2.set_ylim(0,1)
 
-
     #fig.tight_layout()
     plt.show()
 
-    if debug_demand:
-        plt.plot(load.datetime,grid.P_kw_nf)
-        plt.show()
-
+    # if debug_demand:
+    #     plt.plot(load.datetime,grid.P_kw_nf)
+    #     plt.show()
 
 
 # print errors
 err.print_faults()
 
-if not grid_online:
+if not grid_online and not plots_on:
 
     if platform.system() == 'Darwin':   # macos
         os.system('say "Ding! (resilient) fries are done"')
