@@ -15,6 +15,7 @@ __version__ = "6.6"
 #   6.6 - import demand targets, debug printouts, dispatch plot tweaks, quickstart input data conventions
 #   6.5 - new demand targets from linked results 090820
 #   6.4 - demand debug, plot tweaks, no weekend arb in peak shaving, vectors output file now has datetime in col 1
+>>>>>>> 6da298b8e367171a0d25f1115a154fc95e956ba5
 #   6.3 - new output directory, change "output_" file to "resilience_", change "superloop_" filename to "resilience_superloop_", "add "sim_meta_" file, change which files are output when
 #   6.2 - variable soc0 resilience simulation uses soc 35040 from previous utility sim (automatically checks for vectors file in ./Data/Output with appropriate name), update diesel fuel curves
 #   6.1 - **change filename**, peak shaving includes monthly demand targets (hard coded), switch to arbitrage on weekends
@@ -669,9 +670,10 @@ def simulate_resilience(t_0,L):
                 g=gen.P_kw_nf.item(i)
                 G=grid.P_kw_nf.item(i)
                 d=l-p-b-g-G
-                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
+                output.writerow([i+1,l,p,b,s,g,G,d])
 
-    if debug: print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
+    if debug:
+        print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
 
     return time_to_grid_import
 
@@ -748,11 +750,9 @@ def simulate_utility_on(t_0,L):
         err.indexing()
 
 
-
-
-    #
-    # Algorithm
-    #
+#
+# Algorithm
+#
 
     for i in range(L):
 
@@ -763,7 +763,7 @@ def simulate_utility_on(t_0,L):
             day_of_week = load.datetime[i].weekday()
 
             if day_of_week > 4: # saturday=5 sunday=6
-                weekend = 0 #1 # disable for now
+                weekend = 1
             else:
                 weekend = 0
 
@@ -800,8 +800,6 @@ def simulate_utility_on(t_0,L):
                 battpower = bat.power_request(i,LSimbalance)
                 LSBimbalance = LSimbalance - battpower
                 gpower = grid.power_request(i,LSBimbalance)
-
-
         else:
             print('error: to peak shave or not?')
             quit()
@@ -831,7 +829,7 @@ def simulate_utility_on(t_0,L):
                 g=gen.P_kw_nf.item(i)
                 G=grid.P_kw_nf.item(i)
                 d=l-p-b-g-G
-                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
+                output.writerow([i+1,l,p,b,s,g,G,d])
 
     # print a single vector
     if batt_vector_print:
@@ -995,7 +993,6 @@ plots_on = 0
 load_stats = 0
 debug = 0
 debug_energy = 0
-debug_demand = 0
 debug_indexing = 0
 debug_res = 0
 batt_vector_print = 0
@@ -1142,7 +1139,7 @@ if len(sys.argv) > 1:
 # Create output directory
 #
 now = dt.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
-output_dir = './Data/Output/' + site + '_' + str(now)
+output_dir = './Data/Output/' + site + '_' + str(now) + '_' + filename_param
 if not os.path.exists(output_dir):
     os.mkdir(output_dir)
 else:
@@ -1211,7 +1208,7 @@ for load_scaling_factor in load_scale_vector:
                     import_pv_data(site)
 
                     # look for dispatch file containing soc 35040 - use if available
-                    soc_filename = './Data/Dispatch/soc_' + site + '_35040.csv'
+                    soc_filename = './Data/Dispatch/soc_' + site + '_35040_' + filename_param + '.csv'
                     if not grid_online and os.path.isfile(soc_filename):
                         vary_soc = 1
                         import_soc_35040(site)
@@ -1283,7 +1280,7 @@ for load_scaling_factor in load_scale_vector:
 
                     if output_sim_meta:
                         if superloop_enabled:
-                              filename = output_dir + '/sim_meta_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
+                              filename = output_dir + '/sim_meta_{:}_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, filename_param, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = output_dir + '/sim_meta_{}_{}.csv'.format(site, filename_param)
                         with open(filename, 'w', newline='') as file:
@@ -1307,7 +1304,7 @@ for load_scaling_factor in load_scale_vector:
 
                     if output_resilience:
                         if superloop_enabled:
-                              filename = output_dir + '/resilience_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
+                              filename = output_dir + '/resilience_{:}_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, filename_param, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = output_dir + '/resilience_{}_{}.csv'.format(site, filename_param)
                         with open(filename, 'w', newline='') as file:
@@ -1354,7 +1351,7 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 #
 
 if superloop_enabled:
-    filename = output_dir + '/resilience_superloop.csv'
+    filename = output_dir + '/resilience_superloop_{:}_{:}.csv'.format(site, filename_param)
     with open(filename, 'w', newline='') as file:
         output = csv.writer(file)
         output.writerow(['Site',site])
@@ -1419,17 +1416,10 @@ if plots_on:
     ax1.legend()
     ax2.legend()
     ax1.set_xlim(1,L)
-    ax1.set_ylim(1,1.1*np.max(pv.P_kw_nf))
     ax2.set_ylim(0,1)
-
 
     #fig.tight_layout()
     plt.show()
-
-    if debug_demand:
-        plt.plot(load.datetime,grid.P_kw_nf)
-        plt.show()
-
 
 
 # print errors
