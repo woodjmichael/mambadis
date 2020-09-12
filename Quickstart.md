@@ -1,6 +1,6 @@
 # Quickstart
 
-mamba.py v6.1 | Michael Wood | 2020.8.31
+mamba.py v6.7 | Michael Wood | 2020.9.10
 
 
 
