@@ -36,17 +36,19 @@ Input load and solar data should be 15-minute interval, but if that’s not avai
 
 Mamba creates datetime stamps for output data where the time instant is the **beginning** of the 15-minute interval for which the data is valid.
 
-*Example:*
+#### *Example:*
 
-  ```
+```
   Datetime,load kW
   2019/1/1 00:00, 21.6
   2019/1/1 00:15, 18.9
-  ```
+```
 
-  *The above 21.6 kW of load is valid from 2019/1/1 0:00:00 to 2019/1/1 00:14:59.999... and then at exactly 2019/1/1 00:15:00 the load changes to 18.9.*
+*The above 21.6 kW of load is valid from 2019/1/1 0:00:00 to 2019/1/1 00:14:59.999... and then at exactly 2019/1/1 00:15:00 the load changes to 18.9.*
 
-- We sometimes call this the "Beginning of Period (BOP)" convention.
+#### Two Conventions
+
+- We sometimes call this the above example "Beginning of Period (BOP)" convention. Mamba uses this.
 - Redcloud and the associated LINKED RESULTS files use "End of Period (EOP)" convention.
 
 This shouldn't matter, if both programs make their calculations knowing their own convention, and the user knows the convention of the outputs.
@@ -62,11 +64,11 @@ Besides input data, the most important considerations are choosing the simulatio
 
 * Arguments, or 'flags' are explained if you search on “help” in the script or do:
 
-  `python mambadis.py --help`
+  `python mamba.py --help`
 
 * Basic example argument list. In order: simulation type, site, battery power, battery energy, generator power, generator tank size, generator fuel is propane.
 
-  `python mambadis.py -sim r -s fish -bp 30 -be 60 -gp 30 -gt 120 -gfp`
+  `python mamba.py -sim r -s fish -bp 30 -be 60 -gp 30 -gt 120 -gfp`
 
 * For sites without a generator, ~~set~~ the generator power **is set by default** to 0. For no battery set the battery power to 0.
 
@@ -74,11 +76,11 @@ Besides input data, the most important considerations are choosing the simulatio
 
 * To run a superloop you will need to edit the code to define the vector of battery sizes and PV scaling factors. Search on 'if superloop enabled' and remember to include the superloop flag for a successful execution:
 
-  `python mambadis.py -sim r -s fish -sl`
+  `python mamba.py -sim r -s fish -sl`
 
 * When running a superloop, consider first testing your matrix of pv-battery sizes with a single run per Simulated 'Year'. If you messed up, you'll know a lot sooner. Example:
 
-  `python mambadis.py -sim r -s fish -sl -r 1`
+  `python mamba.py -sim r -s fish -sl -r 1`
 
 ### Errors
 
@@ -94,11 +96,11 @@ Harkening back to the three nested loops, we have:
 
 1. **Single Simulation, or 'run.'** The file vectors.csv (off by default) gives you all the dispatch info for a single two-week outage. Warning: only turn this on for a single simulation, or the code will run a lot slower. This is because normally we simulate 2920 (a whole year, in 3 hr increments) at a time, so we throw out the dispatch data for speed. Try:
 
-   `	python mambadis.py -s fish -be 60 -r 1 -v`
+	`	python mamba.py -s fish -be 60 -r 1 -v`
 
 With the above arguments you'll get only the dispatch starting at 12am Jan. To skip ahead and get any 14-day window of the year do (e.g. 24 hrs):
 
-​		`	python3 mambadis.py -s fish -be 60 -r 1 -v -sk 24`
+	`	python mamba.py -s fish -be 60 -r 1 -v -sk 24`
 
 
 2. **Year of Resilience Simulations (default).** Always produced by default, output.csv contains a year of time to first failure and cumulative operating time data for your chosen pv-battery-generator size. Each row of data is for one Single Outage.

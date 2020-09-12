@@ -1,4 +1,4 @@
-# mamba.py
+batt_vector_print# mamba.py
 # Fast economic dispatch simulation of PV-battery-generator microgrids
 
 # python 3.7
@@ -6,12 +6,14 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.4"
+__version__ = "6.6"
 
 #
 # Versions
 #
 
+#   6.6 - import demand targets, debug printouts, dispatch plot tweaks, quickstart input data conventions
+#   6.5 - new demand targets from linked results 090820
 #   6.4 - demand debug, plot tweaks, no weekend arb in peak shaving, vectors output file now has datetime in col 1
 #   6.3 - new output directory, change "output_" file to "resilience_", change "superloop_" filename to "resilience_superloop_", "add "sim_meta_" file, change which files are output when
 #   6.2 - variable soc0 resilience simulation uses soc 35040 from previous utility sim (automatically checks for vectors file in ./Data/Output with appropriate name), update diesel fuel curves
@@ -71,8 +73,7 @@ __version__ = "6.4"
 #
 ################################################################################
 
-import sys
-import os
+import sys, os, platform
 import numpy as np
 import matplotlib.pyplot as plt
 import csv
@@ -97,6 +98,7 @@ class DataClass:
         me.P_kw_nf = np.zeros((length,), dtype=float)
         me.onlineTime_h_ni = np.zeros((length,),dtype=int)
         me.time_to_grid_import_h_nf = np.zeros((length,), dtype=float) # [h]
+        me.soc_nf = np.zeros((length,), dtype=float) # [h]
         me.code_runtime_s = 0
 
     def clear(me):
@@ -224,6 +226,7 @@ class MicrogridClass:
     def __init__(me):
         me.failure = 0
         me.time_to_failure = 0
+        me.demand_targets = []
 
     def clear(me):
         me.time_to_failure = 0
@@ -484,9 +487,18 @@ def import_pv_data(site):
 #
 
 def import_soc_35040(site):
-    my_data = np.genfromtxt(soc_filename, delimiter=',')
-    md = my_data[1:]
-    dispatch_all.soc_nf = np.concatenate((md,md),axis=0)
+    vals = np.genfromtxt(soc_filename, delimiter=',')
+    dispatch_previous.soc_nf = np.concatenate((vals[1:],vals[1:]),axis=0)
+
+
+#
+# Import 12 demand target values
+#
+
+def import_demand_targets(site):
+    filename = './Data/Demand targets/' + site + '_demand_targets.csv'
+    vals = np.genfromtxt(filename, delimiter=',')
+    demand_targets.monthly = vals[1:] / demand_throttle
 
 #
 # Simulate resilience (from commit d36a4ca)
@@ -564,7 +576,7 @@ def simulate_resilience(t_0,L):
     #
 
     # begin battery with the soc from a previous year-long utility-on simulation
-    if vary_soc: bat.set_soc0(dispatch_all.soc_nf[t_0])
+    if vary_soc: bat.set_soc0(dispatch_previous.soc_nf[t_0])
 
     if debug_res: print('soc={:.2f}'.format(bat.soc0))
 
@@ -746,7 +758,7 @@ def simulate_utility_on(t_0,L):
 
         if peak_shaving:
             month = load.datetime[i].month
-            demand_target = demand_targets[month-1]
+            demand_target = demand_targets.monthly[month-1]
 
             day_of_week = load.datetime[i].weekday()
 
@@ -821,6 +833,15 @@ def simulate_utility_on(t_0,L):
                 d=l-p-b-g-G
                 output.writerow([load.datetime[i],l,p,b,s,g,G,d])
 
+    # print a single vector
+    if batt_vector_print:
+        print('battery power output vector [kW]')
+        for val in bat.P_kw_nf:
+            print(val)
+        print('-----batt vector done-------')
+        print('\n\n')
+
+    # print some helpful debug stats
     if debug_energy:
         sum_batdis = np.sum(np.clip(bat.P_kw_nf,0,10000))/4
         sum_batchg = np.sum(-1*np.clip(bat.P_kw_nf,-10000,0))/4
@@ -846,18 +867,41 @@ def simulate_utility_on(t_0,L):
 
         print('max grid [kw]: {:.0f}'.format(max_grid))
 
+    # print some helpful debug stats
     if debug_demand:
+        print('** debug demand **')
+
+        # output some stats
         peak_demand = np.max(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
         peak_demand_index = np.argmax(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
-        print('demand target [kW]: {:.1f}'.format(demand_target))
-        print('peak demand [kW]: {:.1f}'.format(peak_demand))
-        print('peak demand time: {}'.format(load.datetime[peak_demand_index]))
-        print('peak demand index [tstep]: {:d}'.format(peak_demand_index))
-        print('period start: {}'.format(load.datetime[0]))
-        print('period end:   {}'.format(load.datetime[-1]))
 
+
+        print('\nperiod start: {}'.format(load.datetime[0]))
+        print('period end:   {}'.format(load.datetime[-1]))
+        print('period peak demand [kW]: {:.1f}'.format(peak_demand))
+        print('period peak demand time: {}'.format(load.datetime[peak_demand_index]))
+        print('period peak demand index [tstep]: {:d}'.format(peak_demand_index))
+        print('\ndemand targets [kW]: {}'.format(str(demand_targets.monthly)))
+
+        demand_ratchet = 0
+        month = 1
+        demands = []
+        for i in range(L):
+            if (load.datetime[i].month > month) or (i==(L-1)):
+                demands.append(demand_ratchet)
+                demand_ratchet = 0
+                month += 1
+            if grid.P_kw_nf[i] > demand_ratchet:
+                demand_ratchet = grid.P_kw_nf[i]
+        results.demands = np.array(demands)
+        results.demand_errors = results.demands - demand_targets.monthly
+        print('demand errors [kW]:{}'.format(results.demand_errors))
+        print('demands (calendar) [kW]:')
+        for val in results.demands: print(val)
+
+    # print checksum
     if debug:
-        print('checksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
+        print('\nchecksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
 
 
 #
@@ -881,6 +925,7 @@ def help_printout():
     print('Optional Command Line Arguments')
     print(' Run "n" simulations:    -r [n]                      e.g. -r 1   default=2920')
     print(' Dispatch vectors ON:    -v                          e.g. -v     default=OFF')
+    print(' Battery vector ON:    -vb                           e.g. -vb    default=OFF')
     print(' Load stats ON:          --loadstats                 e.g. --loadstats     default=OFF')
     print(' Plots ON:               --plots                     e.g. --plots     default=OFF')
     print(' Skip ahead "h" hours:   -sk [h]                     e.g. -sk 24 default=OFF')
@@ -929,7 +974,8 @@ demand_target = 0
 days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
 vary_soc = 0
-demand_targets = [66.06719582, 43.80149803, 37.16804205, 37.69686871, 37.97599449, 30.52198312, 67.05859677, 45.39228969, 61.84060888, 47.50330065, 56.23347582, 46.60796001]
+weekend_arb_off = 0
+demand_throttle = 1
 
 # physical capacities
 batt_power = 200.         # kw
@@ -947,12 +993,12 @@ output_resilience = 0
 output_vectors = 0
 plots_on = 0
 load_stats = 0
-weekend_arb_off = 0
 debug = 0
 debug_energy = 0
 debug_demand = 0
 debug_indexing = 0
 debug_res = 0
+batt_vector_print = 0
 
 
 # command line run options override defaults
@@ -986,6 +1032,9 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-bd':
             dod = float(sys.argv[i+1])
             batt_energy = batt_energy * dod
+
+        elif sys.argv[i] == '-dt':
+            demand_throttle = float(sys.argv[i+1])
 
         elif sys.argv[i] == '-gp':
             gen_power = float(sys.argv[i+1])
@@ -1029,27 +1078,33 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-v':
             output_vectors = 1
 
+        elif sys.argv[i] == '-vb':
+            batt_vector_print = 1
+
         elif sys.argv[i] == '--plots':
             plots_on = 1
 
         elif sys.argv[i] == '--loadstats':
             load_stats = 1
 
-        elif sys.argv[i] == '--debug_energy':
-            debug = 1
-            debug_energy = 1
+        elif sys.argv[i] == '--debug':
 
-        elif sys.argv[i] == '--debug_demand':
-            debug = 1
-            debug_demand = 1
+            debug = 1                       # basic debug only
 
-        elif sys.argv[i] == '--debug_indexing':
-            debug = 1
-            debug_indexing = 1
+            if i+1 < len(sys.argv):         # make sure there are more args
+                bug = str(sys.argv[i+1])
 
-        elif sys.argv[i] == '--debug_res':
-            debug = 1
-            debug_res = 1
+                if bug == 'energy':
+                    debug_energy = 1
+
+                elif bug == 'demand':
+                    debug_demand = 1
+
+                elif bug == 'indexing':
+                    debug_indexing = 1
+
+                elif bug == 'res':
+                    debug_res = 1
 
         elif sys.argv[i] == '--days':
             days = int(sys.argv[i+1])
@@ -1150,7 +1205,8 @@ for load_scaling_factor in load_scale_vector:
                     load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
                     pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
                     results =   DataClass(3.*60.*60., runs)
-                    dispatch_all =  DataClass(15.*60., 2*46333)  # timestep[s]
+                    dispatch_previous =  DataClass(15.*60., 2*46333)  # timestep[s]
+                    demand_targets =  DataClass(15.*60., 2*46333)  # timestep[s]
                     import_load_data(site, load_stats)
                     import_pv_data(site)
 
@@ -1159,6 +1215,9 @@ for load_scaling_factor in load_scale_vector:
                     if not grid_online and os.path.isfile(soc_filename):
                         vary_soc = 1
                         import_soc_35040(site)
+
+                    if peak_shaving:
+                        import_demand_targets(site)
 
 
                     #
@@ -1313,12 +1372,11 @@ if superloop_enabled:
         for i in range(len(max_ttff)):
             output.writerow([load_scale_vals[i],pv_scale_vals[i],batt_energy_vals[i], batt_power_vals[i], batt_hrs_vals[i], gen_power_vals[i], conf_72h[i],conf_336h[i],min_ttff[i],avg_ttff[i],max_ttff[i]])
 
-
 # plots
 if plots_on:
     t_ni = np.arange(1., L+1., 1.)
 
-    fig, ax1 = plt.subplots(figsize=(20,10))
+    fig, ax1 = plt.subplots(figsize=(20,8.5))
 
     bat_p_kw_pos_nf = np.clip(bat.P_kw_nf,0,10000)
     bat_p_kw_neg_nf = -1*np.clip(bat.P_kw_nf,-10000,0)
@@ -1334,28 +1392,32 @@ if plots_on:
 
     ax2 = ax1.twinx()
 
-    ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load', linewidth=0.1)
-    ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg', linewidth=0.5)
-    ax1.plot(t_ni, grid_line_dis,   'k:',  label='grid import',linewidth=2.)
-    #ax2.plot(t_ni, bat.soc_nf,      'k.',   label='soc', markersize=0.0)
-
     if debug_demand:
         m = load.datetime[i].month
-        ax1.plot([1, L], [demand_targets[m], demand_targets[m]], 'k', label='demand target', linewidth=2.)
+        ax1.plot([1, L], [demand_targets.monthly[m-1], demand_targets.monthly[m-1]], 'r', label='demand target', linewidth=.5)
 
-    ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='yellow', label='pv')#, interpolate=True)
-    ax1.fill_between(t_ni, pv.P_kw_nf,      battdis_line,   facecolor='blue', label='batt dischg')#, interpolate=True)
-    ax1.fill_between(t_ni, battdis_line,    gen_line,       facecolor='green', label='gen')#, interpolate=True)
-    ax1.fill_between(t_ni, gen_line,        grid_line,      facecolor='magenta', label='grid')#, interpolate=True)
+    ax1.plot(t_ni, load.P_kw_nf,    'k',    label='load', linewidth=0.5)
+    ax1.plot(t_ni, battchg_line,    'k--',  label='load + battchg', linewidth=0.5)
+    ax1.plot(t_ni, grid_line_dis,   'r--',  label='grid import',linewidth=1.)
+    ax2.plot(t_ni, bat.soc_nf,      'b:',   label='soc', linewidth=0.5)
+
+
+    ax1.fill_between(t_ni, 0,               pv.P_kw_nf,     facecolor='lightyellow', label='pv')#, interpolate=True)
+    ax1.fill_between(t_ni, pv.P_kw_nf,      battdis_line,   facecolor='lightblue', label='batt dischg')#, interpolate=True)
+    ax1.fill_between(t_ni, battdis_line,    gen_line,       facecolor='lightgreen', label='gen')#, interpolate=True)
+    ax1.fill_between(t_ni, gen_line,        grid_line,      facecolor='pink', label='grid')#, interpolate=True)
 
     bat_soc = np.multiply(bat.soc_nf,1.1*np.max(pv.P_kw_nf))
-    ax1.fill_between(t_ni, 0,               bat_soc,        facecolor=(.85, 1., 1.), zorder=0, label='soc')#, interpolate=True)
+
+    # neat idea: see soc as an area plot (but can't see low SOC.. obscured by dispatch)
+    #ax1.fill_between(t_ni, 0,               bat_soc,        facecolor=(.85, 1., 1.), zorder=0, label='soc')#, interpolate=True)
 
     ax1.set_xlabel('timestep')
     ax1.set_ylabel('power [kW]')
     ax2.set_ylabel('SOC')
 
     ax1.legend()
+    ax2.legend()
     ax1.set_xlim(1,L)
     ax1.set_ylim(1,1.1*np.max(pv.P_kw_nf))
     ax2.set_ylim(0,1)
@@ -1370,8 +1432,12 @@ if plots_on:
 
 
 
-# errors
+# print errors
 err.print_faults()
 
-# ding fries are done
-print('\a')
+if not grid_online:
+
+    if platform.system() == 'Darwin':   # macos
+        os.system('say "Ding! (resilient) fries are done"')
+    else:
+        sys.stdout.write('\a') # beep
