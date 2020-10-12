@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.8"
+__version__ = "6.9"
 
 #
 # Versions
 #
 
+#   6.9 - peak shaving with 3-tier TOU schedule
 #   6.8 - first peak shaving with battery charging from grid, plots tweak
 #   6.7 - merge failed, re-comitting known-good v6.6
 #   6.6 - import demand targets, debug printouts, dispatch plot tweaks, quickstart input data conventions
@@ -494,13 +495,52 @@ def import_soc_35040(site):
 
 
 #
-# Import 12 demand target values
+# Import demand target values and the Time of Use schedule
 #
 
 def import_demand_targets(site):
-    filename = './Data/Demand targets/' + site + '_demand_targets.csv'
+    filename = './Data/Demand targets/' + site + '_demand_targets_3.csv'
     vals = np.genfromtxt(filename, delimiter=',')
-    demand_targets.monthly = vals[1:] / demand_throttle
+    if vals.ndim == 1:
+        tou_levels = 1
+    else:
+        tou_levels = np.size(vals,1)
+
+    if tou_levels == 1:
+        demand_targets.monthly = np.expand_dims(vals[1:], axis=1)   # makes some matrix math later on cleaner
+
+    elif tou_levels == 3:
+        demand_targets.monthly = vals[1:]
+
+    else:
+        print('error: demand tou levels ill-defined')
+        quit()
+
+    filename = './Data/Demand targets/' + site + '_tou_schedule_3.csv'
+    vals = np.genfromtxt(filename, delimiter=',')
+
+    demand_targets.tou_schedule = vals[1:]
+
+    return tou_levels
+
+#
+# Get demand target for given datetime
+#
+
+def get_demand_target(i):
+    month = load.datetime[i].month
+    hour = load.datetime[i].hour
+
+    tou_level = demand_targets.tou_schedule[hour]
+
+    if tou_levels == 1:
+        demand_target = demand_targets.monthly[month-1]
+    elif tou_levels > 1:
+        demand_target = demand_targets.monthly[month-1,tou_level]
+
+    return demand_target
+
+
 
 #
 # Simulate resilience (from commit d36a4ca)
@@ -656,7 +696,7 @@ def simulate_resilience(t_0,L):
     # vectors
     if output_vectors:
         filename = output_dir + '/vectors_{}.csv'.format(filename_param)
-        with open(filename, 'w', newline='') as file:
+        with open(filename, 'w') as file:
             output = csv.writer(file)
             output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
             for i in range(L):
@@ -754,17 +794,6 @@ def simulate_utility_on(t_0,L):
 
     for i in range(L):
 
-        if peak_shaving:
-            month = load.datetime[i].month
-            demand_target = demand_targets.monthly[month-1]
-
-            day_of_week = load.datetime[i].weekday()
-
-            if day_of_week > 4: # saturday=5 sunday=6
-                weekend = 0 #1 # disable for now
-            else:
-                weekend = 0
-
         if solar_data_inverval_15min:
             # only increment i_pv every 4 i-increments
             i_pv = i
@@ -774,20 +803,23 @@ def simulate_utility_on(t_0,L):
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
         # arbitrage
-        if not peak_shaving or (peak_shaving and weekend):
+        if not peak_shaving:
             battpower = bat.power_request(i,LSimbalance)
             LSBimbalance = LSimbalance - battpower
             gpower = grid.power_request(i, LSBimbalance)
 
         # peak shaving with charging batt from grid
         elif peak_shaving and grid_charging:
+            demand_target = get_demand_target(i) #demand_targets.monthly[month-1]
 
             battpower = bat.power_request(i,LSimbalance - demand_target)
             LSBimbalance = LSimbalance - battpower
             gpower = grid.power_request(i,LSBimbalance)
 
+
         # fringe case: peak shaving without charging batt from grid
         elif peak_shaving and not grid_charging:
+            demand_target = get_demand_target(i) #demand_targets.monthly[month-1]
 
             # demand is too high: dispatch battery
             if LSimbalance > demand_target:
@@ -820,7 +852,7 @@ def simulate_utility_on(t_0,L):
     # vectors
     if output_vectors:
         filename = output_dir + '/vectors_{}.csv'.format(filename_param)
-        with open(filename, 'w', newline='') as file:
+        with open(filename, 'w') as file:
             output = csv.writer(file)
             output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
             for i in range(L):
@@ -874,6 +906,7 @@ def simulate_utility_on(t_0,L):
     # print some helpful debug stats
     if debug_demand:
         print('** debug demand **')
+        #np.set_printoptions(precision=1,suppress=True)
 
         # output some stats
         peak_demand = np.max(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
@@ -885,27 +918,29 @@ def simulate_utility_on(t_0,L):
         print('period peak demand [kW]: {:.1f}'.format(peak_demand))
         print('period peak demand time: {}'.format(load.datetime[peak_demand_index]))
         print('period peak demand index [tstep]: {:d}'.format(peak_demand_index))
-        print('\ndemand targets [kW]: {}'.format(str(demand_targets.monthly)))
+        print('\ndemand targets [kW]: \n{}'.format(demand_targets.monthly))
 
-        demand_ratchet = 0
-        month = 1
+
+        prev_month = 1
+        demand_ratchet = [0] * tou_levels
         demands = []
+
         for i in range(L):
-            if (load.datetime[i].month > month) or (i==(L-1)):
+            hour = load.datetime[i].hour
+            tou_level = int(demand_targets.tou_schedule[hour])
+
+            if (load.datetime[i].month > prev_month) or (i==(L-1)):
                 demands.append(demand_ratchet)
-                demand_ratchet = 0
-                month += 1
-            if grid.P_kw_nf[i] > demand_ratchet:
-                demand_ratchet = grid.P_kw_nf[i]
+                demand_ratchet = [0] * tou_levels
+                prev_month += 1
 
-        results.demands = np.array(demands)
-        print('\ndemands (calendar) [kW]:')
-        for val in results.demands:
-            print(val)
+            elif grid.P_kw_nf[i] > demand_ratchet[tou_level]:
+                demand_ratchet[tou_level] = grid.P_kw_nf[i]
 
-        print('\ndemand errors [kW]:')
-        for i in range(len(results.demands)):
-            print (results.demands[i] - demand_targets.monthly[i])
+        results.demands = np.asarray(demands)
+        print('\ndemands [kW]:\n{}'.format(results.demands))
+
+        print('\ndemand errors [kW]:\n{}'.format(results.demands - demand_targets.monthly))
 
     # print checksum
     if debug:
@@ -932,7 +967,7 @@ def help_printout():
     print('Optional Command Line Arguments')
     print(' Run "n" simulations:    -r [n]                      e.g. -r 1   default=2920')
     print(' Dispatch vectors ON:    -v                          e.g. -v     default=OFF')
-    print(' Battery vector ON:      -vb                           e.g. -vb    default=OFF')
+    print(' Battery vector ON:      -vb                         e.g. -vb    default=OFF')
     print(' Load stats ON:          --loadstats                 e.g. --loadstats     default=OFF')
     print(' Skip ahead "h" hours:   -sk [h]                     e.g. -sk 24 default=OFF')
     print(' Superloop enable:       -sl                         e.g. -sl    default=OFF')
@@ -943,6 +978,7 @@ def help_printout():
     print('     -bd must come after -be because it modifies battery energy')
     print('     careful: -bd just changes the battery energy, so soc will still be 0-100%')
     print(' Plots ON (option to plot normal or utility first):    --plots [ | u]                     e.g. --plots     default=OFF')
+    print('Debug (see code):        --debug [arg]               e.g. --debug demand')
     print('')
 
 
@@ -983,7 +1019,7 @@ days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
 vary_soc = 0
 weekend_arb_off = 0
-demand_throttle = 1
+tou_levels = 1
 
 # physical capacities
 batt_power = 200.         # kw
@@ -1040,9 +1076,6 @@ if len(sys.argv) > 1:
         elif sys.argv[i] == '-bd':
             dod = float(sys.argv[i+1])
             batt_energy = batt_energy * dod
-
-        elif sys.argv[i] == '-dt':
-            demand_throttle = float(sys.argv[i+1])
 
         elif sys.argv[i] == '-gp':
             gen_power = float(sys.argv[i+1])
@@ -1236,7 +1269,7 @@ for load_scaling_factor in load_scale_vector:
                         import_soc_35040(site)
 
                     if peak_shaving:
-                        import_demand_targets(site)
+                        tou_levels = import_demand_targets(site)
 
 
                     #
@@ -1305,7 +1338,7 @@ for load_scaling_factor in load_scale_vector:
                               filename = output_dir + '/sim_meta_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = output_dir + '/sim_meta_{}_{}.csv'.format(site, filename_param)
-                        with open(filename, 'w', newline='') as file:
+                        with open(filename, 'w') as file:
                             output = csv.writer(file)
                             output.writerow(['Site',site])
                             output.writerow(['Mamba.py v',__version__])
@@ -1329,7 +1362,7 @@ for load_scaling_factor in load_scale_vector:
                               filename = output_dir + '/resilience_{:}_{:.1f}_{:.3f}_{:.0f}_{:.1f}_{:.0f}.csv'.format(site, load_scaling_factor, pv_scaling_factor, batt_power, batt_hrs, gen_power)
                         else:
                             filename = output_dir + '/resilience_{}_{}.csv'.format(site, filename_param)
-                        with open(filename, 'w', newline='') as file:
+                        with open(filename, 'w') as file:
                             output = csv.writer(file)
                             output.writerow(['Site',site])
                             output.writerow(['Mamba.py v',__version__])
@@ -1374,7 +1407,7 @@ results.code_runtime_s = t_elapsed_dt.total_seconds()
 
 if superloop_enabled:
     filename = output_dir + '/resilience_superloop.csv'
-    with open(filename, 'w', newline='') as file:
+    with open(filename, 'w') as file:
         output = csv.writer(file)
         output.writerow(['Site',site])
         output.writerow(['Mamba.py v',__version__])
