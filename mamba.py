@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.9"
+__version__ = "6.10"
 
 #
 # Versions
 #
 
+#   6.10 - 3-tier TOU schedule can be 60- or 15-minute interval; tested on Santa Ana CC; CS1 and CS2 cheksum tests OK (see mamba.md)
 #   6.9 - peak shaving with 3-tier TOU schedule
 #   6.8 - first peak shaving with battery charging from grid, plots tweak
 #   6.7 - merge failed, re-comitting known-good v6.6
@@ -82,6 +83,8 @@ import matplotlib.pyplot as plt
 import csv
 import datetime as dt
 import time
+from pprint import pprint
+
 
 ################################################################################
 #
@@ -308,6 +311,91 @@ class BattClass:
         me.soc0 = soc
         me.soc_prev = soc
 
+#
+# Demand Targets and TOU Information
+#
+
+class DemandTargetsClass:
+    def __init__(me,site):
+        me.monthly = []                 # monthly demand targets
+        me.tou_sched = np.zeros((12,1), dtype=int)
+        me.tou_levels = 1               # number of TOU levels
+        me.tou_res_minutes = 60         # TOU schedule resolution in minutes
+        me.import_demand_targets(site)  # mandatory
+        me.import_tou_schedule(site)    # optional
+
+    # low/med/hi = 3, etc
+    def calc_tou_levels(me):
+        me.tou_levels = int(np.max(me.tou_sched) + 1)
+        me.check_dims()
+
+    # time interval for each TOU level datapoint
+    def calc_tou_res(me):
+        if me.tou_sched.shape[0] == 24:
+            me.tou_res_minutes = 60
+        elif me.tou_sched.shape[0] == 96:
+            me.tou_res_minutes = 15
+
+    # loook for inconsistencies
+    def check_dims(me):
+        if (me.monthly.shape[1] > 1) or (me.tou_levels > 1):
+            if me.tou_levels != me.monthly.shape[1]:
+                print('WARNING: demand target shape should reflect the number of TOU levels')
+
+    def import_demand_targets(me,site):
+        filename = './Data/Demand targets/' + site + '_demand_targets.csv'
+        try:
+            me.monthly = np.genfromtxt(filename, delimiter=',')[1:]
+            if me.monthly.ndim == 1:
+                me.monthly = np.expand_dims(me.monthly, axis=1)   # make sure targets array is 2D
+
+        except OSError:
+            print('FATALITY: Could not open demand targets at: \n', filename)
+            quit()
+
+    def import_tou_schedule(me,site):
+        filename = './Data/Demand targets/' + site + '_tou_schedule.csv'
+
+        try:
+            me.tou_sched = np.genfromtxt(filename, dtype=int, delimiter=',')[1:]
+            me.calc_tou_levels()
+            me.calc_tou_res()
+
+        except OSError:
+            print('FATALITY: Could not open TOU schedule at: \n', filename)
+            quit()
+
+    def get_tou_level(me,i):
+        hour = load.datetime[i].hour
+        min = load.datetime[i].minute
+
+        if me.tou_res_minutes == 15:
+            k = int(4*(hour + min/60))
+            tou_level_now = me.tou_sched[k]
+
+        elif me.tou_res_minutes == 60:
+            tou_level_now = me.tou_sched[hour]
+
+        else:
+            print('Error with TOU resolution')
+
+        return tou_level_now
+
+
+    # look up and return demand target based on month and TOU level
+    def get(me,i):
+        month = load.datetime[i].month
+
+        tou_level_now = me.get_tou_level(i)
+
+        if debug_demand:
+            if i<=95:
+                print('{} {} tou_res {} tou_level_now {} demand_target {}'.format(i,load.datetime[i],me.tou_res_minutes,tou_level_now,me.monthly[month-1,tou_level_now]))
+
+        return me.monthly[month-1,tou_level_now]
+
+
+
 
 #
 # Faults
@@ -523,6 +611,7 @@ def import_demand_targets(site):
 
     return tou_levels
 
+
 #
 # Get demand target for given datetime
 #
@@ -530,8 +619,11 @@ def import_demand_targets(site):
 def get_demand_target(i):
     month = load.datetime[i].month
     hour = load.datetime[i].hour
+    min = load.datetime[i].minute
 
-    tou_level = demand_targets.tou_schedule[hour]
+    k = int(4*(hour + min/60))
+
+    tou_level = demand_targets.tou_sched[k]
 
     if tou_levels == 1:
         demand_target = demand_targets.monthly[month-1]
@@ -810,8 +902,7 @@ def simulate_utility_on(t_0,L):
 
         # peak shaving with charging batt from grid
         elif peak_shaving and grid_charging:
-            demand_target = get_demand_target(i) #demand_targets.monthly[month-1]
-
+            demand_target = demand_targets.get(i)
             battpower = bat.power_request(i,LSimbalance - demand_target)
             LSBimbalance = LSimbalance - battpower
             gpower = grid.power_request(i,LSBimbalance)
@@ -819,7 +910,7 @@ def simulate_utility_on(t_0,L):
 
         # fringe case: peak shaving without charging batt from grid
         elif peak_shaving and not grid_charging:
-            demand_target = get_demand_target(i) #demand_targets.monthly[month-1]
+            demand_target = demand_targets.get(i)
 
             # demand is too high: dispatch battery
             if LSimbalance > demand_target:
@@ -906,12 +997,11 @@ def simulate_utility_on(t_0,L):
     # print some helpful debug stats
     if debug_demand:
         print('** debug demand **')
-        #np.set_printoptions(precision=1,suppress=True)
+        np.set_printoptions(precision=1,suppress=True)
 
         # output some stats
         peak_demand = np.max(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
         peak_demand_index = np.argmax(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
-
 
         print('\nperiod start: {}'.format(load.datetime[0]))
         print('period end:   {}'.format(load.datetime[-1]))
@@ -920,26 +1010,26 @@ def simulate_utility_on(t_0,L):
         print('period peak demand index [tstep]: {:d}'.format(peak_demand_index))
         print('\ndemand targets [kW]: \n{}'.format(demand_targets.monthly))
 
-
         prev_month = 1
-        demand_ratchet = [0] * tou_levels
+        demand_ratchet = [0] * demand_targets.tou_levels
         demands = []
 
         for i in range(L):
             hour = load.datetime[i].hour
-            tou_level = int(demand_targets.tou_schedule[hour])
+            tou_level = demand_targets.get_tou_level(i) #int(demand_targets.tou_sched[hour])
 
             if (load.datetime[i].month > prev_month) or (i==(L-1)):
                 demands.append(demand_ratchet)
-                demand_ratchet = [0] * tou_levels
+                demand_ratchet = [0] * demand_targets.tou_levels
                 prev_month += 1
 
             elif grid.P_kw_nf[i] > demand_ratchet[tou_level]:
                 demand_ratchet[tou_level] = grid.P_kw_nf[i]
 
-        results.demands = np.asarray(demands)
-        print('\ndemands [kW]:\n{}'.format(results.demands))
 
+        results.demands = np.asarray(demands)
+        #np.set_printoptions(precision=1,suppress=True)
+        print('\ndemands [kW]:\n{}'.format(results.demands))
         print('\ndemand errors [kW]:\n{}'.format(results.demands - demand_targets.monthly))
 
     # print checksum
@@ -1019,7 +1109,7 @@ days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
 vary_soc = 0
 weekend_arb_off = 0
-tou_levels = 1
+#tou_levels = 1
 
 # physical capacities
 batt_power = 200.         # kw
@@ -1258,9 +1348,9 @@ for load_scaling_factor in load_scale_vector:
                     pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
                     results =   DataClass(3.*60.*60., runs)
                     dispatch_previous =  DataClass(15.*60., 2*46333)  # timestep[s]
-                    demand_targets =  DataClass(15.*60., 2*46333)  # timestep[s]
                     import_load_data(site, load_stats)
                     import_pv_data(site)
+
 
                     # look for dispatch file containing soc 35040 - use if available
                     soc_filename = './Data/Dispatch/soc_' + site + '_35040.csv'
@@ -1269,7 +1359,7 @@ for load_scaling_factor in load_scale_vector:
                         import_soc_35040(site)
 
                     if peak_shaving:
-                        tou_levels = import_demand_targets(site)
+                        demand_targets =  DemandTargetsClass(site)
 
 
                     #
@@ -1344,7 +1434,7 @@ for load_scaling_factor in load_scale_vector:
                             output.writerow(['Mamba.py v',__version__])
                             output.writerow(['Datetime',dt.datetime.now()])
                             output.writerow(['Simulated outage duration [days]',days])
-                            output.writerow(['Outages simulated',runs])
+                            output.writerow(['Consecutive simulations',runs])
                             output.writerow([])
                             output.writerow(['PV scaling factor', pv_scaling_factor])
                             output.writerow(['Battery power [kW]',batt_power])
