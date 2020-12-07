@@ -4,9 +4,11 @@
 # specific to mamba
 old
 *.xlsx
+*.xlsm
 *.vb
 *.csv
 *.numbers
+*sandbox.py
 
 
 

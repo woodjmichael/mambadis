@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.10"
+__version__ = "6.11"
 
 #
 # Versions
 #
 
+#   6.11 - entech peak-shaving and arbitrage simulation (first PS, then arb)
 #   6.10 - 3-tier TOU schedule can be 60- or 15-minute interval; tested on Santa Ana CC; CS1 and CS2 cheksum tests OK (see mamba.md)
 #   6.9 - peak shaving with 3-tier TOU schedule
 #   6.8 - first peak shaving with battery charging from grid, plots tweak
@@ -1037,6 +1038,154 @@ def simulate_utility_on(t_0,L):
         print('\nchecksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
 
 #
+# Simulate entech (utility on)
+#
+
+def simulate_entech(m_0,L):
+
+    m_end = m_0 + L
+    n_0 = m_0
+    n_end = n_0 + L
+
+    #
+    # New vectors
+    #
+
+    load.P_kw_nf = load_all.P_kw_nf[m_0:m_end]
+    load.datetime = load_all.datetime[m_0:m_end]
+
+    pv.P_kw_nf = pv_all.P_kw_nf[n_0:n_end]
+    pv.datetime = pv_all.datetime[n_0:n_end]
+
+    # check indexing
+    # (beginning and ending date and hour should match between load and pv)
+    if (load.datetime[0].day    - pv.datetime[0].day):      err.indexing()
+    if (load.datetime[-1].day   - pv.datetime[-1].day):     err.indexing()
+    if (load.datetime[0].hour   - pv.datetime[0].hour):     err.indexing()
+    if (load.datetime[-1].hour  - pv.datetime[-1].hour):    err.indexing()
+
+    #
+    # Algorithm
+    #
+
+    for i in range(L):
+
+        LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i]   # load-solar imbalance
+
+        # peak shaving
+        if bat.soc_prev >= PS_arb_thresh:
+            demand_target = demand_targets.get(i)
+            battpower = bat.power_request(i,LSimbalance - demand_target)
+            LSBimbalance = LSimbalance - battpower
+            gpower = grid.power_request(i,LSBimbalance)
+
+        # arbitrage
+        else:
+            battpower = bat.power_request(i,LSimbalance)
+            LSBimbalance = LSimbalance - battpower
+            gpower = grid.power_request(i, LSBimbalance)
+
+        LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
+
+        # check energy balance
+        if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
+            err.energy_balance()
+
+    # vectors
+    if output_vectors:
+        filename = output_dir + '/vectors_{}.csv'.format(filename_param)
+        with open(filename, 'w') as file:
+            output = csv.writer(file)
+            output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
+            for i in range(L):
+                l=load.P_kw_nf.item(i)
+                p=pv.P_kw_nf.item(i)
+                b=bat.P_kw_nf.item(i)
+                s=bat.soc_nf.item(i)
+                g=gen.P_kw_nf.item(i)
+                G=grid.P_kw_nf.item(i)
+                d=l-p-b-g-G
+                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
+
+    # print a single vector
+    if batt_vector_print:
+        print('battery power output vector [kW]')
+        for val in bat.P_kw_nf:
+            print(val)
+        print('-----batt vector done-------')
+        print('\n\n')
+
+    # print some helpful debug stats
+    if debug_energy:
+        sum_batdis = np.sum(np.clip(bat.P_kw_nf,0,10000))/4
+        sum_batchg = np.sum(-1*np.clip(bat.P_kw_nf,-10000,0))/4
+
+        sum_load = np.sum(load.P_kw_nf)/4
+        sum_pv = np.sum(pv.P_kw_nf)/4
+        sum_grid = np.sum(grid.P_kw_nf)/4
+
+        soc_final = bat.soc_nf.item(L-1)
+        delta_soc = bat.En_kwh * (1 - soc_final)
+
+        max_grid = np.max(grid.P_kw_nf)
+
+        print('sum load: {:.0f}'.format(sum_load))
+        print('sum pv: {:.0f}'.format(sum_pv))
+        print('sum grid: {:.0f}'.format(sum_grid))
+
+        print('sum bat dis: {:.0f}'.format(sum_batdis))
+        print('sum bat chg: {:.0f}'.format(sum_batchg))
+
+        print('soc final: {:.5f}'.format(soc_final))
+        print('delta soc [kwh]: {:.0f}'.format(delta_soc))
+
+        print('max grid [kw]: {:.0f}'.format(max_grid))
+
+    # print some helpful debug stats
+    if debug_demand:
+        print('** debug demand **')
+        np.set_printoptions(precision=1,suppress=True)
+
+        # output some stats
+        peak_demand = np.max(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
+        peak_demand_index = np.argmax(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
+
+        print('\nperiod start: {}'.format(load.datetime[0]))
+        print('period end:   {}'.format(load.datetime[-1]))
+        print('period peak demand [kW]: {:.1f}'.format(peak_demand))
+        print('period peak demand time: {}'.format(load.datetime[peak_demand_index]))
+        print('period peak demand index [tstep]: {:d}'.format(peak_demand_index))
+        print('\ndemand targets [kW]: \n{}'.format(demand_targets.monthly))
+
+        prev_month = 1
+        demand_ratchet = [0] * demand_targets.tou_levels
+        demands = []
+
+        for i in range(L):
+            hour = load.datetime[i].hour
+            tou_level = demand_targets.get_tou_level(i) #int(demand_targets.tou_sched[hour])
+
+            if (load.datetime[i].month > prev_month) or (i==(L-1)):
+                demands.append(demand_ratchet)
+                demand_ratchet = [0] * demand_targets.tou_levels
+                prev_month += 1
+
+            elif grid.P_kw_nf[i] > demand_ratchet[tou_level]:
+                demand_ratchet[tou_level] = grid.P_kw_nf[i]
+
+
+        results.demands = np.asarray(demands)
+        #np.set_printoptions(precision=1,suppress=True)
+        print('\ndemands [kW]:\n{}'.format(results.demands))
+        print('\ndemand errors [kW]:\n{}'.format(results.demands - demand_targets.monthly))
+
+    # print checksum
+    if debug:
+        print('\nchecksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
+
+
+
+#
 # Print help
 #
 
@@ -1101,9 +1250,11 @@ runs = 365*24//simulation_interval   # number of iterations
 skip_ahead = 0                      # number of hours to skip ahead
 solar_data_inverval_15min = 1
 superloop_enabled = 0               # run matrix of battery energy and PV scale (oversize) factors
-grid_online = 0
 peak_shaving = 0
+grid_online = 0
 grid_charging = 0
+entech = 0
+PS_arb_thresh = 0.4
 demand_target = 0
 days = 14                          # length of grid outage
 L = days*24*4                     # length of simulation in timesteps
@@ -1200,9 +1351,24 @@ if len(sys.argv) > 1:
                 peak_shaving = 1
                 output_vectors = 1
 
+            elif sim == 'ue':
+                grid_online = 1
+                grid_charging = 1
+                entech = 1
+                gen_power = 0
+                simulation_interval = 8760
+                runs = 1
+                days = 365
+                L = days*24*4                     # length of simulation in timesteps
+                peak_shaving = 1
+                output_vectors = 1
+
             else:
                 print('\033[1;31;1m fatality: no simulation type selected')
                 quit()
+
+        elif sys.argv[i] == '-psat':
+            PS_arb_thresh = float(sys.argv[i+1])
 
         elif sys.argv[i] == '-gt':
             gen_tank = float(sys.argv[i+1])
@@ -1394,6 +1560,8 @@ for load_scaling_factor in load_scale_vector:
                             results.time_to_grid_import_h_nf[i] = simulate_resilience(t0,L)
                             # calculate one last result
                             results.onlineTime_h_ni[i] = grid.offlineCounter/4.
+                        elif grid_online and entech:
+                            simulate_entech(t0,L)
                         elif grid_online:
                             simulate_utility_on(t0,L)
                         else:
