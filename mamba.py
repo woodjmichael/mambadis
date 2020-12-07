@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.11"
+__version__ = "6.12"
 
 #
 # Versions
 #
 
+#   6.12 - switch entech simulation: first arb, then PS
 #   6.11 - entech peak-shaving and arbitrage simulation (first PS, then arb)
 #   6.10 - 3-tier TOU schedule can be 60- or 15-minute interval; tested on Santa Ana CC; CS1 and CS2 cheksum tests OK (see mamba.md)
 #   6.9 - peak shaving with 3-tier TOU schedule
@@ -1072,18 +1073,18 @@ def simulate_entech(m_0,L):
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i]   # load-solar imbalance
 
-        # peak shaving
+        # arbitrage
         if bat.soc_prev >= PS_arb_thresh:
+            battpower = bat.power_request(i,LSimbalance)
+            LSBimbalance = LSimbalance - battpower
+            gpower = grid.power_request(i, LSBimbalance)
+
+        # peak shaving
+        else:
             demand_target = demand_targets.get(i)
             battpower = bat.power_request(i,LSimbalance - demand_target)
             LSBimbalance = LSimbalance - battpower
             gpower = grid.power_request(i,LSBimbalance)
-
-        # arbitrage
-        else:
-            battpower = bat.power_request(i,LSimbalance)
-            LSBimbalance = LSimbalance - battpower
-            gpower = grid.power_request(i, LSBimbalance)
 
         LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
 
