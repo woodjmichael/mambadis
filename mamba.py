@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.12"
+__version__ = "6.13"
 
 #
 # Versions
 #
 
+#   6.13 - experimenting with grid charging (and not charging) in entech dispatch, see mamba.md dev notes 
 #   6.12 - switch entech simulation: first arb, then PS
 #   6.11 - entech peak-shaving and arbitrage simulation (first PS, then arb)
 #   6.10 - 3-tier TOU schedule can be 60- or 15-minute interval; tested on Santa Ana CC; CS1 and CS2 cheksum tests OK (see mamba.md)
@@ -280,6 +281,7 @@ class BattClass:
             p_final = 0.
         if abs(p_final) < 0.001: p_final = 0
         me.soc_nf[index] = me.soc_update(p_final)
+        #me.P_kw_nf[index] += p_final
         me.P_kw_nf[index] = p_final
         return p_final
 
@@ -451,6 +453,41 @@ class FaultClass:
 # Functions
 #
 ################################################################################
+
+#
+# Print help
+#
+
+def help_printout():
+    print('\nmamba.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
+    print('')
+    print('Arguments are best issued in this order, with the values following directly after keys')
+    print('e.g. % python mamba.py -s fish -bp 20 be 40 .. (etc)')
+    print('')
+    print('Typical Command Line Arguments')
+    print(' Simulation type:        -sim [r=res | ua = utility arbitrage | up = utility peak shaving]    e.g. -sim r')
+    print(' Site name:              -s  [sitename]              e.g. -s hradult')
+    print(' Battery power:          -bp [power kW]              e.g. -bp 60')
+    print(' Battery energy:         -be [energy kWh]            e.g. -be 120')
+    print(' Generator power:        -gp [power kW]              e.g. -gp 60')
+    print(' Generator tank:         -gt [size gal]              e.g. -gt 200')
+    print('')
+    print('Optional Command Line Arguments')
+    print(' Run "n" simulations:    -r [n]                      e.g. -r 1   default=2920')
+    print(' Dispatch vectors ON:    -v                          e.g. -v     default=OFF')
+    print(' Battery vector ON:      -vb                         e.g. -vb    default=OFF')
+    print(' Load stats ON:          --loadstats                 e.g. --loadstats     default=OFF')
+    print(' Skip ahead "h" hours:   -sk [h]                     e.g. -sk 24 default=OFF')
+    print(' Superloop enable:       -sl                         e.g. -sl    default=OFF')
+    print(' Gen fuel is propane:    -gfp                        e.g. -gfp   default=OFF')
+    print(' Days to simulate:       --days [days]               e.g. --days 3')
+    print('     --days must come after --sim because it re-modifies some variables')
+    print(' Battery depth of dischg:-bd [dod]                   e.g. -bd 0.95')
+    print('     -bd must come after -be because it modifies battery energy')
+    print('     careful: -bd just changes the battery energy, so soc will still be 0-100%')
+    print(' Plots ON (option to plot normal or utility first):    --plots [ | u]                     e.g. --plots     default=OFF')
+    print('Debug (see code):        --debug [arg]               e.g. --debug demand')
+    print('')
 
 #
 # Find load-pv data offset
@@ -1069,24 +1106,96 @@ def simulate_entech(m_0,L):
     # Algorithm
     #
 
-    for i in range(L):
+    chg=0
 
-        LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i]   # load-solar imbalance
+    for i in range(L):
+        LSimbalance = load.P_kw_nf[i] - pv.P_kw_nf[i]   # load-solar imbalance
+        demand_target = demand_targets.get(i)
+
 
         # arbitrage
-        if bat.soc_prev >= PS_arb_thresh:
-            battpower = bat.power_request(i,LSimbalance)
-            LSBimbalance = LSimbalance - battpower
-            gpower = grid.power_request(i, LSBimbalance)
+        if 0:#bat.soc_prev >= 0:
+
+            if not chg:
+
+                battpower = bat.power_request(i,LSimbalance)
+                LSBimbalance =  LSimbalance - battpower       # load-solar-batt imbalance
+                gridpower = grid.power_request(i,LSBimbalance)
+
+                # turn on chg if..
+                if battpower<0 and grid_charging and not (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                    chg = 1
+
+            if chg:
+
+                battpower = bat.power_request(i,LSimbalance - bat.Pn_kw)
+                LSBimbalance = LSimbalance - battpower
+                gridpower = grid.power_request(i,LSBimbalance)
+
+                # turn off chg if..
+                if bat.full(i) or (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                    battpower = bat.power_request(i,LSimbalance)
+                    LSBimbalance = LSimbalance - battpower
+                    gridpower = grid.power_request(i,LSBimbalance)
+                    chg = 0
 
         # peak shaving
         else:
-            demand_target = demand_targets.get(i)
-            battpower = bat.power_request(i,LSimbalance - demand_target)
-            LSBimbalance = LSimbalance - battpower
-            gpower = grid.power_request(i,LSBimbalance)
 
-        LSBGimbalance = LSimbalance - battpower  -   gpower        # load-solar-batt-grid/gen imbalance
+            if not chg:
+
+                battpower = bat.power_request(i,LSimbalance - demand_target)
+                LSBimbalance =  LSimbalance - battpower       # load-solar-batt imbalance
+                gridpower = grid.power_request(i,LSBimbalance)
+
+                # turn on chg if..
+                if battpower<0 and grid_charging and not (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                    chg = 1
+
+            if chg:
+
+                battpower = bat.power_request(i,LSimbalance - demand_target)
+                LSBimbalance = LSimbalance - battpower
+                gridpower = grid.power_request(i,LSBimbalance)
+
+                # turn off chg if..
+                if bat.full(i) or (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                    battpower = bat.power_request(i,LSimbalance)
+                    LSBimbalance = LSimbalance - battpower
+                    gridpower = grid.power_request(i,LSBimbalance)
+                    chg = 0
+
+
+        LSBGimbalance = LSimbalance - battpower - gridpower        # load-solar-batt-gen imbalance
+
+
+
+
+
+
+
+        # # arb arb arb arb arb arb arb arb arb arb arb arb arb arb arb arb arb
+        # if bat.soc_prev >= 0:
+        #     battpower =         bat.power_request(i,LSimbalance)
+        #     LSBimbalance =      LSimbalance - battpower # load-solar-battery residual
+        #     gpower =            grid.power_request(i, LSBimbalance)
+        #
+        #
+        # # ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps
+        # else:
+        #     demand_target = demand_targets.get(i)
+        #     battpower = bat.power_request(i,LSimbalance - demand_target)
+        #     LSBimbalance = LSimbalance - battpower
+        #     gpower = grid.power_request(i,LSBimbalance)
+
+
+
+
+
+
+
+
+
 
         # check energy balance
         if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
@@ -1183,43 +1292,6 @@ def simulate_entech(m_0,L):
     # print checksum
     if debug:
         print('\nchecksum: {:.3f}'.format(np.sum(bat.P_kw_nf)))
-
-
-
-#
-# Print help
-#
-
-def help_printout():
-    print('\nmamba.py\nmuGrid Analytics LLC\nMichael Wood\nmichael.wood@mugrid.com')
-    print('')
-    print('Arguments are best issued in this order, with the values following directly after keys')
-    print('e.g. % python mamba.py -s fish -bp 20 be 40 .. (etc)')
-    print('')
-    print('Typical Command Line Arguments')
-    print(' Simulation type:        -sim [r=res | ua = utility arbitrage | up = utility peak shaving]    e.g. -sim r')
-    print(' Site name:              -s  [sitename]              e.g. -s hradult')
-    print(' Battery power:          -bp [power kW]              e.g. -bp 60')
-    print(' Battery energy:         -be [energy kWh]            e.g. -be 120')
-    print(' Generator power:        -gp [power kW]              e.g. -gp 60')
-    print(' Generator tank:         -gt [size gal]              e.g. -gt 200')
-    print('')
-    print('Optional Command Line Arguments')
-    print(' Run "n" simulations:    -r [n]                      e.g. -r 1   default=2920')
-    print(' Dispatch vectors ON:    -v                          e.g. -v     default=OFF')
-    print(' Battery vector ON:      -vb                         e.g. -vb    default=OFF')
-    print(' Load stats ON:          --loadstats                 e.g. --loadstats     default=OFF')
-    print(' Skip ahead "h" hours:   -sk [h]                     e.g. -sk 24 default=OFF')
-    print(' Superloop enable:       -sl                         e.g. -sl    default=OFF')
-    print(' Gen fuel is propane:    -gfp                        e.g. -gfp   default=OFF')
-    print(' Days to simulate:       --days [days]               e.g. --days 3')
-    print('     --days must come after --sim because it re-modifies some variables')
-    print(' Battery depth of dischg:-bd [dod]                   e.g. -bd 0.95')
-    print('     -bd must come after -be because it modifies battery energy')
-    print('     careful: -bd just changes the battery energy, so soc will still be 0-100%')
-    print(' Plots ON (option to plot normal or utility first):    --plots [ | u]                     e.g. --plots     default=OFF')
-    print('Debug (see code):        --debug [arg]               e.g. --debug demand')
-    print('')
 
 
 
@@ -1334,6 +1406,7 @@ if len(sys.argv) > 1:
 
             elif sim == 'ua':
                 grid_online = 1
+                #grid_charging = 1
                 gen_power = 0
                 simulation_interval = 8760
                 runs = 1
@@ -1685,6 +1758,8 @@ if superloop_enabled:
 
 # plots
 if plots_on:
+    #plt.style.use('dark_background')
+    #plt.rcParams['axes.prop_cycle']
 
     # plot type
     fig, ax1 = plt.subplots(figsize=(20,8.5))
@@ -1700,7 +1775,7 @@ if plots_on:
     u = np.clip(grid.P_kw_nf,0,10000)
 
     # consider putting in a horizontal demand target line
-    if peak_shaving and debug_demand:
+    if peak_shaving:# and debug_demand:
         m = load.datetime[i].month
         ax1.plot([1, L], [demand_targets.monthly[m-1], demand_targets.monthly[m-1]], 'r', label='demand target', linewidth=.5)
 
@@ -1732,11 +1807,11 @@ if plots_on:
     ax1.set_ylabel('power [kW]')
     ax2.set_ylabel('SOC')
 
-    ax1.legend()
-    ax2.legend()
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
     ax1.set_xlim(1,L)
-    ax1.set_ylim(1,1.1*np.max(pv.P_kw_nf))
-    ax2.set_ylim(0,1)
+    ax1.set_ylim(0,1.1*np.max([p,l,g,d,c,u]))
+    ax2.set_ylim(0,1.1)
 
     #fig.tight_layout()
     plt.show()
