@@ -6,13 +6,14 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.13"
+__version__ = "6.14"
 
 #
 # Versions
 #
 
-#   6.13 - experimenting with grid charging (and not charging) in entech dispatch, see mamba.md dev notes 
+#   6.14 - "pvclass" to allow dispatching of PV power among multiple sites
+#   6.13 - experimenting with grid charging (and not charging) in entech dispatch, see mamba.md dev notes
 #   6.12 - switch entech simulation: first arb, then PS
 #   6.11 - entech peak-shaving and arbitrage simulation (first PS, then arb)
 #   6.10 - 3-tier TOU schedule can be 60- or 15-minute interval; tested on Santa Ana CC; CS1 and CS2 cheksum tests OK (see mamba.md)
@@ -272,7 +273,7 @@ class BattClass:
         me.soc_nf.fill(0)
         me.soc_flag = 0
 
-    def power_request(me, index, p_req):
+    def power_request(me, index, p_req):    # can only be called once per tstep
         if p_req > 0:
             p_final = min(p_req, me.Pn_kw, me.P_max_soc())
         elif p_req < 0:
@@ -285,6 +286,19 @@ class BattClass:
         me.P_kw_nf[index] = p_final
         return p_final
 
+    def sum_power_request(me, index, p_req): # multiple calls/tstep possible
+        if p_req > 0:
+            p_final = min(p_req, me.Pn_kw, me.P_max_soc())
+        elif p_req < 0:
+            p_final = max(p_req, -me.Pn_kw, me.P_min_soc())
+        else:
+            p_final = 0.
+        if abs(p_final) < 0.001: p_final = 0
+        me.soc_nf[index] = me.soc_update(p_final)
+        me.P_kw_nf[index] += p_final
+        #me.P_kw_nf[index] = p_final
+        return p_final
+
     def soc_update(me,p_soc):
         if p_soc > 0:
             soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 / me.eff_dischg)/me.En_kwh
@@ -292,7 +306,6 @@ class BattClass:
             soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 * me.eff_chg)/me.En_kwh
         else:
             soc_new = me.soc_prev
-
         me.soc_prev = soc_new
         return soc_new
 
@@ -314,6 +327,27 @@ class BattClass:
     def set_soc0(me,soc):
         me.soc0 = soc
         me.soc_prev = soc
+
+#
+# PV Class
+#
+
+class PVClass:
+    def __init__(me, tstep, length):
+        me.timestep = tstep              # units of seconds
+        me.offset = 0                    # in case load and pv data don't begin at same time
+        me.datetime = []
+        me.P_kw_nf = np.zeros((length,), dtype=float)       # power available
+        me.Pdisp = np.zeros((length,), dtype=float)         # power dispatched
+
+    def clear(me):
+        me.datetime = []
+        me.P_kw_nf.fill(0)
+
+    def power_request(me, i, p_req):
+        p_final = np.minimum(p_req, me.Pdisp[i])
+        me.Pdisp[i] -= p_final
+        return p_final
 
 #
 # Demand Targets and TOU Information
@@ -611,6 +645,7 @@ def import_pv_data(site):
 
     pv_all.P_kw_nf = np.concatenate((pv,pv),axis=0)
     pv_all.P_kw_nf = pv_scaling_factor * pv_all.P_kw_nf
+    pv_all.Pdisp = np.copy(pv_all.P_kw_nf)              # copy over for dispatching solar
 
 #
 # Import 35040 of soc from annual simulation
@@ -1089,11 +1124,12 @@ def simulate_entech(m_0,L):
     # New vectors
     #
 
-    load.P_kw_nf = load_all.P_kw_nf[m_0:m_end]
-    load.datetime = load_all.datetime[m_0:m_end]
+    load.P_kw_nf =  np.copy(load_all.P_kw_nf[m_0:m_end])
+    load.datetime = np.copy(load_all.datetime[m_0:m_end])
 
-    pv.P_kw_nf = pv_all.P_kw_nf[n_0:n_end]
-    pv.datetime = pv_all.datetime[n_0:n_end]
+    pv.P_kw_nf =    np.copy(pv_all.P_kw_nf[n_0:n_end])
+    pv.Pdisp =      np.copy(pv_all.Pdisp[n_0:n_end])
+    pv.datetime =   np.copy(pv_all.datetime[n_0:n_end])
 
     # check indexing
     # (beginning and ending date and hour should match between load and pv)
@@ -1109,7 +1145,6 @@ def simulate_entech(m_0,L):
     chg=0
 
     for i in range(L):
-        LSimbalance = load.P_kw_nf[i] - pv.P_kw_nf[i]   # load-solar imbalance
         demand_target = demand_targets.get(i)
 
 
@@ -1140,7 +1175,7 @@ def simulate_entech(m_0,L):
                     chg = 0
 
         # peak shaving
-        else:
+        if 0:
 
             if not chg:
 
@@ -1166,39 +1201,32 @@ def simulate_entech(m_0,L):
                     chg = 0
 
 
-        LSBGimbalance = LSimbalance - battpower - gridpower        # load-solar-batt-gen imbalance
 
+        # 6.14 ue logic
+        pvpower = 0
+        battpower = bat.sum_power_request(i,0) # dumb hack
 
+        # turn up "inverter" for demand reduction
+        if load.P_kw_nf[i] > demand_target:
+            pvpower += pv.power_request(i,load.P_kw_nf[i] - demand_target)
+            battpower += bat.sum_power_request(i,load.P_kw_nf[i] - demand_target - pvpower)
 
+        # turn up "inverter" to meet all load
+        if load.P_kw_nf[i] > (pvpower + battpower):
+            pvpower +=  pv.power_request(i,load.P_kw_nf[i] - pvpower - battpower)
+            if  bat.soc_nf[i] > 0.35:
+                battpower += bat.sum_power_request(i,load.P_kw_nf[i] - pvpower - battpower)
 
+        # charge battery with any  extra solar
+        if (pv.P_kw_nf[i] > load.P_kw_nf[i]):
+            # PV request??
+            battpower -= bat.power_request(i,-(pv.P_kw_nf[i]-load.P_kw_nf[i]))
 
-
-
-        # # arb arb arb arb arb arb arb arb arb arb arb arb arb arb arb arb arb
-        # if bat.soc_prev >= 0:
-        #     battpower =         bat.power_request(i,LSimbalance)
-        #     LSBimbalance =      LSimbalance - battpower # load-solar-battery residual
-        #     gpower =            grid.power_request(i, LSBimbalance)
-        #
-        #
-        # # ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps ps
-        # else:
-        #     demand_target = demand_targets.get(i)
-        #     battpower = bat.power_request(i,LSimbalance - demand_target)
-        #     LSBimbalance = LSimbalance - battpower
-        #     gpower = grid.power_request(i,LSBimbalance)
-
-
-
-
-
-
-
-
+        gridpower = grid.power_request(i, load.P_kw_nf[i] - pvpower - battpower)
 
 
         # check energy balance
-        if np.absolute((LSimbalance - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
+        if np.absolute((load.P_kw_nf[i] - pv.P_kw_nf[i] - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
             err.energy_balance()
 
     # vectors
@@ -1584,8 +1612,8 @@ for load_scaling_factor in load_scale_vector:
                     #create_synthetic_data()
 
                     #hr fire load_all =  DataClass(15.*60., 50788)  # timestep[s], hood river fire size
+                    pv_all =    PVClass(15.*60., 2*8760)     # timestep[s]
                     load_all =  DataClass(15.*60., 2*46333)  # timestep[s]
-                    pv_all =    DataClass(60.*60., 2*8760)     # timestep[s]
                     results =   DataClass(3.*60.*60., runs)
                     dispatch_previous =  DataClass(15.*60., 2*46333)  # timestep[s]
                     import_load_data(site, load_stats)
@@ -1618,7 +1646,7 @@ for load_scaling_factor in load_scale_vector:
                         # wish we could pre-allocate these, but it was causing a bug
                         #   even after calling .clear() on everything
                         load =  DataClass(  15.*60.,L)                 # timestep[s]
-                        pv =    DataClass(  60.*60.,L)                   # timestep[s]
+                        pv =    PVClass(  15.*60.,L)                   # timestep[s]
                         gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
                         bat =   BattClass(  batt_power,batt_energy,1,15*60.,L)      # kW, kWh, soc0 tstep[s]
                         grid =  GridClass(  1000.,L)                    # kW
