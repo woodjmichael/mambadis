@@ -7,12 +7,14 @@ __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
 __version__ = "6.14"
+__version__ = "6.13.1"
 
 #
 # Versions
 #
 
 #   6.14 - "pvclass" to allow dispatching of PV power among multiple sites
+#   6.13.1 - resilience algo now only calls _.power_request() once per tstep, soc_nf[i] refers to time at beginning of tstep, BattClass uses soc_new
 #   6.13 - experimenting with grid charging (and not charging) in entech dispatch, see mamba.md dev notes
 #   6.12 - switch entech simulation: first arb, then PS
 #   6.11 - entech peak-shaving and arbitrage simulation (first PS, then arb)
@@ -260,73 +262,66 @@ class BattClass:
         me.En_kwh = En_kwh
         me.soc0 = soc0
         me.soc_prev = soc0
+        me.soc_new = soc0
         me.timestep = timestep                      # units of seconds
         me.P_kw_nf = np.zeros((length,), dtype=float)
-        me.soc_nf = np.zeros((length,), dtype=float)
+        me.soc_nf = soc0 * np.ones((length,), dtype=float)
         me.soc_flag = 0                             # binary
         me.eff_chg = 0.95
         me.eff_dischg = 0.95
 
     def clear(me):
         me.soc_prev = me.soc0
+        me.soc_new = me.soc0
         me.P_kw_nf.fill(0)
         me.soc_nf.fill(0)
         me.soc_flag = 0
 
-    def power_request(me, index, p_req):    # can only be called once per tstep
+    def power_request(me, i, p_req):
+        me.soc_nf[i] = me.soc_new
+
         if p_req > 0:
-            p_final = min(p_req, me.Pn_kw, me.P_max_soc())
+            p_final = min(p_req, me.Pn_kw, me.P_max_soc(i))
         elif p_req < 0:
-            p_final = max(p_req, -me.Pn_kw, me.P_min_soc())
+            p_final = max(p_req, -me.Pn_kw, me.P_min_soc(i))
         else:
             p_final = 0.
         if abs(p_final) < 0.001: p_final = 0
-        me.soc_nf[index] = me.soc_update(p_final)
-        #me.P_kw_nf[index] += p_final
-        me.P_kw_nf[index] = p_final
+
+        me.P_kw_nf[i] = p_final #me.P_kw_nf[i] += p_final
+        me.soc_update(i,p_final)
+
         return p_final
 
-    def sum_power_request(me, index, p_req): # multiple calls/tstep possible
-        if p_req > 0:
-            p_final = min(p_req, me.Pn_kw, me.P_max_soc())
-        elif p_req < 0:
-            p_final = max(p_req, -me.Pn_kw, me.P_min_soc())
+    def soc_update(me,i,p):
+        if p > 0:
+            me.soc_new = me.soc_nf[i] - (p * me.timestep/3600.0 / me.eff_dischg)/me.En_kwh
+        elif p < 0:
+            me.soc_new = me.soc_nf[i] - (p * me.timestep/3600.0 * me.eff_chg)/me.En_kwh
         else:
-            p_final = 0.
-        if abs(p_final) < 0.001: p_final = 0
-        me.soc_nf[index] = me.soc_update(p_final)
-        me.P_kw_nf[index] += p_final
-        #me.P_kw_nf[index] = p_final
-        return p_final
+            me.soc_new = me.soc_nf[i]
 
-    def soc_update(me,p_soc):
-        if p_soc > 0:
-            soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 / me.eff_dischg)/me.En_kwh
-        elif p_soc < 0:
-            soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 * me.eff_chg)/me.En_kwh
-        else:
-            soc_new = me.soc_prev
-        me.soc_prev = soc_new
-        return soc_new
+        #me.soc_prev = soc_new
+        #return soc_new
 
-    def P_max_soc(me):
-        return me.soc_prev * me.En_kwh * (3600.0/me.timestep) / me.eff_dischg
+    def P_max_soc(me,i):
+        return me.soc_nf[i] * me.En_kwh * (3600.0/me.timestep) / me.eff_dischg
 
-    def P_min_soc(me):
-        return -1*(1 - me.soc_prev) * me.En_kwh * (3600.0/me.timestep) * me.eff_chg
+    def P_min_soc(me,i):
+        return -1*(1 - me.soc_nf[i]) * me.En_kwh * (3600.0/me.timestep) * me.eff_chg
 
-    def empty(me,i):
-        return (me.soc_nf[i] < 0.001)
+    def empty(me):
+        return (me.soc_new < 0.001)
 
-    def full(me,i):
-        return (me.soc_nf[i] > 0.999)
+    def full(me):
+        return (me.soc_new > 0.999)
 
-    def over_half(me,i):
-        return (me.soc_nf[i] > 0.5)
+    def over_half(me):
+        return (me.soc_new > 0.5)
 
     def set_soc0(me,soc):
         me.soc0 = soc
-        me.soc_prev = soc
+        me.soc_new = soc
 
 #
 # PV Class
@@ -783,13 +778,13 @@ def simulate_resilience(t_0,L):
     # Algorithm
     #
 
+
     # begin battery with the soc from a previous year-long utility-on simulation
     if vary_soc: bat.set_soc0(dispatch_previous.soc_nf[t_0])
 
-    if debug_res: print('soc={:.2f}'.format(bat.soc0))
+    if debug_res: print('soc0={:.2f}'.format(bat.soc0))
 
     chg = 0
-
 
     for i in range(L):
 
@@ -801,37 +796,25 @@ def simulate_resilience(t_0,L):
 
         LSimbalance = load.P_kw_nf[i]      -   pv.P_kw_nf[i_pv]   # load-solar imbalance
 
-        if not chg and not gen.tank_empty():
+        if not gen.tank_empty():
 
-            battpower = bat.power_request(i,LSimbalance)
+            if bat.empty():
+                chg = 1
+            elif bat.full() or (bat.over_half() and (pv.P_kw_nf[i_pv] > 0)):
+                chg = 0
 
-            LSBimbalance =  LSimbalance     -   battpower       # load-solar-batt imbalance
+            if chg == 0:
+                battpower = bat.power_request(i,LSimbalance)
+                LSBimbalance =  LSimbalance - battpower       # load-solar-batt imbalance
+                genpower = gen.power_request(i,LSBimbalance)
 
-            genpower = gen.power_request(i,LSBimbalance)
-
-            # at low soc assume to turn gen on
-            if bat.empty(i):
+            elif chg == 1:
                 LSGimbalance = LSimbalance - gen.Pn_kw
                 battpower = bat.power_request(i,LSGimbalance)
                 LSBimbalance = LSimbalance - battpower
                 genpower = gen.power_request(i,LSBimbalance)
-                chg = 1
 
-        if chg and not gen.tank_empty():
-
-            LSGimbalance = LSimbalance - gen.Pn_kw
-            battpower = bat.power_request(i,LSGimbalance)
-            LSBimbalance = LSimbalance - battpower
-            genpower = gen.power_request(i,LSBimbalance)
-
-            # turn off gen when batt full or half full and PV turns on
-            if bat.full(i) or (bat.over_half(i) and (pv.P_kw_nf[i_pv] > 0)):
-                battpower = bat.power_request(i,LSimbalance)
-                LSBimbalance = LSimbalance - battpower
-                genpower = gen.power_request(i,LSBimbalance)
-                chg = 0
-
-        if gen.tank_empty():
+        elif gen.tank_empty():
             chg = 0
             battpower = bat.power_request(i,LSimbalance)
             LSBimbalance = LSimbalance - battpower
@@ -847,7 +830,7 @@ def simulate_resilience(t_0,L):
 
         gridpower = grid.power_request(i,LSBGimbalance)
 
-
+        if debug_res:  print(i,'gal %.2f' % gen.fuelConsumed)
 
         if gridpower <= 0:
             grid.offlineCounter += 1                        # time that microgrid services load
@@ -1158,7 +1141,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn on chg if..
-                if battpower<0 and grid_charging and not (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                if battpower<0 and grid_charging and not (bat.over_half() and pv.P_kw_nf[i]>0):
                     chg = 1
 
             if chg:
@@ -1168,7 +1151,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn off chg if..
-                if bat.full(i) or (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                if bat.full() or (bat.over_half() and pv.P_kw_nf[i]>0):
                     battpower = bat.power_request(i,LSimbalance)
                     LSBimbalance = LSimbalance - battpower
                     gridpower = grid.power_request(i,LSBimbalance)
@@ -1184,7 +1167,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn on chg if..
-                if battpower<0 and grid_charging and not (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                if battpower<0 and grid_charging and not (bat.over_half() and pv.P_kw_nf[i]>0):
                     chg = 1
 
             if chg:
@@ -1194,7 +1177,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn off chg if..
-                if bat.full(i) or (bat.over_half(i) and pv.P_kw_nf[i]>0):
+                if bat.full() or (bat.over_half() and pv.P_kw_nf[i]>0):
                     battpower = bat.power_request(i,LSimbalance)
                     LSBimbalance = LSimbalance - battpower
                     gridpower = grid.power_request(i,LSBimbalance)
@@ -1852,7 +1835,7 @@ if plots_on:
 # print errors
 err.print_faults()
 
-if not grid_online and not plots_on:
+if not grid_online and not plots_on and not debug:
 
     if platform.system() == 'Darwin':   # macos
         os.system('say "Ding! (resilient) fries are done"')
