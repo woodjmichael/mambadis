@@ -6,14 +6,14 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.14"
-__version__ = "6.13.1"
+__version__ = "6.15"
 
 #
 # Versions
 #
 
-#   6.14 - "pvclass" to allow dispatching of PV power among multiple sites
+#   6.15 - merge of 6.14 and 6.13.1, also report gal fuel consumed
+#   6.14 - "pvclass" to allow dispatching of PV power among multiple sites  (parent is 6.13)
 #   6.13.1 - resilience algo now only calls _.power_request() once per tstep, soc_nf[i] refers to time at beginning of tstep, BattClass uses soc_new
 #   6.13 - experimenting with grid charging (and not charging) in entech dispatch, see mamba.md dev notes
 #   6.12 - switch entech simulation: first arb, then PS
@@ -124,26 +124,27 @@ class DataClass:
 
 class GenClass:
     def __init__(me, Pn_kw, a, b, tankCap, tstep, length):
-        me.timestep = tstep                             # [s]
+        me.timestep = tstep                                         # [s]
         me.dpph = 3600./tstep
         me.tstepHr = tstep/3600.
         me.Pn_kw = Pn_kw
-        me.fuelcurve_Acoeff = a                         # [gal/h/kw]
-        me.fuelcurve_Bcoeff = b                         # [gal/h]
+        me.fuelcurve_Acoeff = a                                     # [gal/h/kw]
+        me.fuelcurve_Bcoeff = b                                     # [gal/h]
         me.fuelcurve_Ainv = 1/a
-        me.fuelTankCapacity = tankCap                   # [gal]
+        me.fuelTankCapacity = tankCap                               # [gal]
         me.P_kw_nf = np.zeros((length,), dtype=float)
-        me.fuelConsumed = 0                              # [gal]
-        me.min_on_time = 1                              # [timesteps]
-        me.min_off_time = 1                             # [timesteps]
+        me.fuelConsumedTotal = 0                                    # [gal]
+        me.fuelConsumed_gal_nf = np.zeros((length,), dtype=float)   #[gal]
+        me.min_on_time = 1                                          # [timesteps]
+        me.min_off_time = 1                                         # [timesteps]
         me.on_time = me.min_on_time
         me.off_time = me.min_off_time
         me.prev_power = 0
 
     def clear(me):
         me.P_kw_nf.fill(0)
-        me.fuelConsumed = 0
-
+        me.fuelConsumed_gal_nf.fill(0)
+        me.fuelConsumedTotal = 0
 
     def power_request(me, i, p_req):
         if (p_req > 0) & (p_req < 0.001):
@@ -157,21 +158,22 @@ class GenClass:
             p_final = 0.
         me.on_off_counter(p_final)
         me.P_kw_nf[i] = np.array([p_final])
-        me.fuel_calc(p_final)
+        me.fuel_calc(i, p_final)
         return p_final
 
     def Pmax_tank(me):
-        fuel_remaining = max(me.fuelTankCapacity - me.fuelConsumed,0)
+        fuel_remaining = max(me.fuelTankCapacity - me.fuelConsumedTotal,0)
         if fuel_remaining:
             power = (fuel_remaining*me.dpph - me.fuelcurve_Bcoeff)*me.fuelcurve_Ainv
         else:
             power = 0
         return power
 
-    def fuel_calc(me, power):
+    def fuel_calc(me, i, power):
         if power:
             fuel_delta = (power*me.fuelcurve_Acoeff + me.fuelcurve_Bcoeff)*me.tstepHr
-            me.fuelConsumed += fuel_delta
+            me.fuelConsumedTotal += fuel_delta
+            me.fuelConsumed_gal_nf[i] = fuel_delta
 
     def on_off_counter(me, now_power):
         if me.prev_power:
@@ -195,7 +197,7 @@ class GenClass:
         return ret
 
     def tank_empty(me):
-        return  (me.fuelTankCapacity - me.fuelConsumed) < 0.001
+        return  (me.fuelTankCapacity - me.fuelConsumedTotal) < 0.001
 
 
 #
@@ -830,8 +832,6 @@ def simulate_resilience(t_0,L):
 
         gridpower = grid.power_request(i,LSBGimbalance)
 
-        if debug_res:  print(i,'gal %.2f' % gen.fuelConsumed)
-
         if gridpower <= 0:
             grid.offlineCounter += 1                        # time that microgrid services load
 
@@ -847,7 +847,7 @@ def simulate_resilience(t_0,L):
         filename = output_dir + '/vectors_{}.csv'.format(filename_param)
         with open(filename, 'w') as file:
             output = csv.writer(file)
-            output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
+            output.writerow(['datetime','load kW','pv kW','batt kw','batt soc','gen kW','gen gal','grid kW'])
             for i in range(L):
                 if solar_data_inverval_15min:
                     i_pv = i
@@ -858,9 +858,9 @@ def simulate_resilience(t_0,L):
                 b=bat.P_kw_nf.item(i)
                 s=bat.soc_nf.item(i)
                 g=gen.P_kw_nf.item(i)
+                f=gen.fuelConsumed_gal_nf.item(i)
                 G=grid.P_kw_nf.item(i)
-                d=l-p-b-g-G
-                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
+                output.writerow([load.datetime[i],l,p,b,s,g,f,G])
 
     if debug: print('checksum: {:.1f}'.format(np.sum(bat.P_kw_nf)))
 
