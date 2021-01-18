@@ -6,12 +6,13 @@
 __author__ = "Michael Wood"
 __email__ = "michael.wood@mugrid.com"
 __copyright__ = "Copyright 2020, muGrid Analytics"
-__version__ = "6.15"
+__version__ = "6.16"
 
 #
 # Versions
 #
 
+#   6.16 - soc again based on end of period, entech logic for 3 loads/grids
 #   6.15 - merge of 6.14 and 6.13.1, also report gal fuel consumed
 #   6.14 - "pvclass" to allow dispatching of PV power among multiple sites  (parent is 6.13)
 #   6.13.1 - resilience algo now only calls _.power_request() once per tstep, soc_nf[i] refers to time at beginning of tstep, BattClass uses soc_new
@@ -264,7 +265,6 @@ class BattClass:
         me.En_kwh = En_kwh
         me.soc0 = soc0
         me.soc_prev = soc0
-        me.soc_new = soc0
         me.timestep = timestep                      # units of seconds
         me.P_kw_nf = np.zeros((length,), dtype=float)
         me.soc_nf = soc0 * np.ones((length,), dtype=float)
@@ -274,56 +274,64 @@ class BattClass:
 
     def clear(me):
         me.soc_prev = me.soc0
-        me.soc_new = me.soc0
         me.P_kw_nf.fill(0)
         me.soc_nf.fill(0)
         me.soc_flag = 0
 
-    def power_request(me, i, p_req):
-        me.soc_nf[i] = me.soc_new
-
+    def power_request(me, index, p_req):
         if p_req > 0:
-            p_final = min(p_req, me.Pn_kw, me.P_max_soc(i))
+            p_final = min(p_req, me.Pn_kw, me.P_max_soc())
         elif p_req < 0:
-            p_final = max(p_req, -me.Pn_kw, me.P_min_soc(i))
+            p_final = max(p_req, -me.Pn_kw, me.P_min_soc())
         else:
             p_final = 0.
         if abs(p_final) < 0.001: p_final = 0
-
-        me.P_kw_nf[i] = p_final #me.P_kw_nf[i] += p_final
-        me.soc_update(i,p_final)
-
+        me.soc_nf[index] = me.soc_update(p_final)
+        me.P_kw_nf[index] = p_final
         return p_final
 
-    def soc_update(me,i,p):
-        if p > 0:
-            me.soc_new = me.soc_nf[i] - (p * me.timestep/3600.0 / me.eff_dischg)/me.En_kwh
-        elif p < 0:
-            me.soc_new = me.soc_nf[i] - (p * me.timestep/3600.0 * me.eff_chg)/me.En_kwh
+    def sum_power_request(me, index, p_req):
+        if p_req > 0:
+            p_final = min(p_req, me.Pn_kw, me.P_max_soc())
+        elif p_req < 0:
+            p_final = max(p_req, -me.Pn_kw, me.P_min_soc())
         else:
-            me.soc_new = me.soc_nf[i]
+            p_final = 0.
+        if abs(p_final) < 0.001: p_final = 0
+        me.soc_nf[index] = me.soc_update(p_final)
+        me.P_kw_nf[index] += p_final
+        return p_final
 
-        #me.soc_prev = soc_new
-        #return soc_new
 
-    def P_max_soc(me,i):
-        return me.soc_nf[i] * me.En_kwh * (3600.0/me.timestep) / me.eff_dischg
+    def soc_update(me,p_soc):
+        if p_soc > 0:
+            soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 / me.eff_dischg)/me.En_kwh
+        elif p_soc < 0:
+            soc_new = me.soc_prev - (p_soc * me.timestep/3600.0 * me.eff_chg)/me.En_kwh
+        else:
+            soc_new = me.soc_prev
 
-    def P_min_soc(me,i):
-        return -1*(1 - me.soc_nf[i]) * me.En_kwh * (3600.0/me.timestep) * me.eff_chg
+        me.soc_prev = soc_new
+        return soc_new
 
-    def empty(me):
-        return (me.soc_new < 0.001)
+    def P_max_soc(me):
+        return me.soc_prev * me.En_kwh * (3600.0/me.timestep) / me.eff_dischg
 
-    def full(me):
-        return (me.soc_new > 0.999)
+    def P_min_soc(me):
+        return -1*(1 - me.soc_prev) * me.En_kwh * (3600.0/me.timestep) * me.eff_chg
 
-    def over_half(me):
-        return (me.soc_new > 0.5)
+    def empty(me,i):
+        return (me.soc_nf[i] < 0.001)
+
+    def full(me,i):
+        return (me.soc_nf[i] > 0.999)
+
+    def over_half(me,i):
+        return (me.soc_nf[i] > 0.5)
 
     def set_soc0(me,soc):
         me.soc0 = soc
-        me.soc_new = soc
+        me.soc_prev = soc
 
 #
 # PV Class
@@ -335,13 +343,13 @@ class PVClass:
         me.offset = 0                    # in case load and pv data don't begin at same time
         me.datetime = []
         me.P_kw_nf = np.zeros((length,), dtype=float)       # power available
-        me.Pdisp = np.zeros((length,), dtype=float)         # power dispatched
+        me.Pdisp = np.zeros((length,), dtype=float)         # power NOT dispatched
 
     def clear(me):
         me.datetime = []
         me.P_kw_nf.fill(0)
 
-    def power_request(me, i, p_req):
+    def sum_power_request(me, i, p_req):
         p_final = np.minimum(p_req, me.Pdisp[i])
         me.Pdisp[i] -= p_final
         return p_final
@@ -601,6 +609,63 @@ def import_load_data(site, load_stats):
         print('avg load [kw] = {:.1f}'.format(np.average(load_all.P_kw_nf)))
         print('min load [kw] = {:.1f}'.format(np.amin(load_all.P_kw_nf)))
 
+def import_load_data_ue(site, load_stats):
+
+    # 1
+
+    filename = './Data/Load/' + site + '1_load.csv'
+    with open(filename,'r') as f:
+        datacsv = list(csv.reader(f, delimiter=","))
+        del datacsv[0]
+        t = []
+        p = []
+        for line in datacsv:
+            newtxt = line[0] #hr fire .split('P')[0][0:-1]
+            newval = dt.datetime.strptime(newtxt, '%Y/%m/%d %H:%M')
+            t.append(newval)
+    load1_all.datetime = t + t
+
+    my_data = np.genfromtxt(filename, delimiter=',')
+    md = load_scaling_factor * my_data[1:,1]
+    load1_all.P_kw_nf = np.concatenate((md,md),axis=0)
+
+    # 2
+
+    filename = './Data/Load/' + site + '2_load.csv'
+    with open(filename,'r') as f:
+        datacsv = list(csv.reader(f, delimiter=","))
+        del datacsv[0]
+        t = []
+        p = []
+        for line in datacsv:
+            newtxt = line[0] #hr fire .split('P')[0][0:-1]
+            newval = dt.datetime.strptime(newtxt, '%Y/%m/%d %H:%M')
+            t.append(newval)
+    load2_all.datetime = t + t
+
+    my_data = np.genfromtxt(filename, delimiter=',')
+    md = load_scaling_factor * my_data[1:,1]
+    load2_all.P_kw_nf = np.concatenate((md,md),axis=0)
+
+    # 3
+
+    filename = './Data/Load/' + site + '3_load.csv'
+    with open(filename,'r') as f:
+        datacsv = list(csv.reader(f, delimiter=","))
+        del datacsv[0]
+        t = []
+        p = []
+        for line in datacsv:
+            newtxt = line[0] #hr fire .split('P')[0][0:-1]
+            newval = dt.datetime.strptime(newtxt, '%Y/%m/%d %H:%M')
+            t.append(newval)
+    load3_all.datetime = t + t
+
+    my_data = np.genfromtxt(filename, delimiter=',')
+    md = load_scaling_factor * my_data[1:,1]
+    load3_all.P_kw_nf = np.concatenate((md,md),axis=0)
+
+
 #
 # Import solar vector
 #
@@ -800,9 +865,9 @@ def simulate_resilience(t_0,L):
 
         if not gen.tank_empty():
 
-            if bat.empty():
+            if bat.empty(i):
                 chg = 1
-            elif bat.full() or (bat.over_half() and (pv.P_kw_nf[i_pv] > 0)):
+            elif bat.full(i) or (bat.over_half(i) and (pv.P_kw_nf[i_pv] > 0)):
                 chg = 0
 
             if chg == 0:
@@ -1108,7 +1173,14 @@ def simulate_entech(m_0,L):
     #
 
     load.P_kw_nf =  np.copy(load_all.P_kw_nf[m_0:m_end])
+    load1.P_kw_nf =  np.copy(load1_all.P_kw_nf[m_0:m_end])
+    load2.P_kw_nf =  np.copy(load2_all.P_kw_nf[m_0:m_end])
+    load3.P_kw_nf =  np.copy(load3_all.P_kw_nf[m_0:m_end])
+
     load.datetime = np.copy(load_all.datetime[m_0:m_end])
+    load1.datetime = np.copy(load1_all.datetime[m_0:m_end])
+    load2.datetime = np.copy(load2_all.datetime[m_0:m_end])
+    load3.datetime = np.copy(load3_all.datetime[m_0:m_end])
 
     pv.P_kw_nf =    np.copy(pv_all.P_kw_nf[n_0:n_end])
     pv.Pdisp =      np.copy(pv_all.Pdisp[n_0:n_end])
@@ -1141,7 +1213,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn on chg if..
-                if battpower<0 and grid_charging and not (bat.over_half() and pv.P_kw_nf[i]>0):
+                if battpower<0 and grid_charging and not (bat.over_half(i) and pv.P_kw_nf[i]>0):
                     chg = 1
 
             if chg:
@@ -1151,7 +1223,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn off chg if..
-                if bat.full() or (bat.over_half() and pv.P_kw_nf[i]>0):
+                if bat.full(i) or (bat.over_half(i) and pv.P_kw_nf[i]>0):
                     battpower = bat.power_request(i,LSimbalance)
                     LSBimbalance = LSimbalance - battpower
                     gridpower = grid.power_request(i,LSBimbalance)
@@ -1167,7 +1239,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn on chg if..
-                if battpower<0 and grid_charging and not (bat.over_half() and pv.P_kw_nf[i]>0):
+                if battpower<0 and grid_charging and not (bat.over_half(i) and pv.P_kw_nf[i]>0):
                     chg = 1
 
             if chg:
@@ -1177,7 +1249,7 @@ def simulate_entech(m_0,L):
                 gridpower = grid.power_request(i,LSBimbalance)
 
                 # turn off chg if..
-                if bat.full() or (bat.over_half() and pv.P_kw_nf[i]>0):
+                if bat.full(i) or (bat.over_half(i) and pv.P_kw_nf[i]>0):
                     battpower = bat.power_request(i,LSimbalance)
                     LSBimbalance = LSimbalance - battpower
                     gridpower = grid.power_request(i,LSBimbalance)
@@ -1185,31 +1257,53 @@ def simulate_entech(m_0,L):
 
 
 
-        # 6.14 ue logic
-        pvpower = 0
-        battpower = bat.sum_power_request(i,0) # dumb hack
+
+
+        # begin new logic
+        inv1 = bat.sum_power_request(i,0) # dumb hack
+        inv2 = bat.sum_power_request(i,0) # dumb hack
+        inv3 = bat.sum_power_request(i,0) # dumb hack
 
         # turn up "inverter" for demand reduction
-        if load.P_kw_nf[i] > demand_target:
-            pvpower += pv.power_request(i,load.P_kw_nf[i] - demand_target)
-            battpower += bat.sum_power_request(i,load.P_kw_nf[i] - demand_target - pvpower)
+        # (request PV then batt power to reduce load to demand target)
+        if load1.P_kw_nf[i] > demand_target:
+            inv1 += pv.sum_power_request(i,load1.P_kw_nf[i] - demand_target)
+            inv1 += bat.sum_power_request(i,load1.P_kw_nf[i] - demand_target - inv1)
+        if load2.P_kw_nf[i] > demand_target:
+            inv2 += pv.sum_power_request(i,load2.P_kw_nf[i] - demand_target)
+            inv2 += bat.sum_power_request(i,load2.P_kw_nf[i] - demand_target - inv2)
+        if load3.P_kw_nf[i] > demand_target:
+            inv3 += pv.sum_power_request(i,load3.P_kw_nf[i] - demand_target)
+            inv3 += bat.sum_power_request(i,load3.P_kw_nf[i] - demand_target - inv3)
 
-        # turn up "inverter" to meet all load
-        if load.P_kw_nf[i] > (pvpower + battpower):
-            pvpower +=  pv.power_request(i,load.P_kw_nf[i] - pvpower - battpower)
+
+        # turn up "inverter" to meet total load
+        # (request PV power to meet total load, if >35% request battery too)
+        if load1.P_kw_nf[i] > (inv1):
+            inv1 +=  pv.sum_power_request(i,load1.P_kw_nf[i] - inv1)
             if  bat.soc_nf[i] > 0.35:
-                battpower += bat.sum_power_request(i,load.P_kw_nf[i] - pvpower - battpower)
+                inv1 += bat.sum_power_request(i,load1.P_kw_nf[i] - inv1)
+        if load2.P_kw_nf[i] > (inv2):
+            inv2 +=  pv.sum_power_request(i,load2.P_kw_nf[i] - inv2)
+            if  bat.soc_nf[i] > 0.35:
+                inv2 += bat.sum_power_request(i,load2.P_kw_nf[i] - inv2)
+        if load3.P_kw_nf[i] > (inv3):
+            inv3 +=  pv.sum_power_request(i,load3.P_kw_nf[i] - inv3)
+            if  bat.soc_nf[i] > 0.35:
+                inv3 += bat.sum_power_request(i,load3.P_kw_nf[i] - inv3)
 
-        # charge battery with any  extra solar
-        if (pv.P_kw_nf[i] > load.P_kw_nf[i]):
-            # PV request??
-            battpower -= bat.power_request(i,-(pv.P_kw_nf[i]-load.P_kw_nf[i]))
+        # charge battery with any extra solar
+        if (pv.P_kw_nf[i] > (load1.P_kw_nf[i] + load2.P_kw_nf[i] + load3.P_kw_nf[i] )  ):
+            bat.sum_power_request(i, -(pv.P_kw_nf[i] - (load1.P_kw_nf[i] + load2.P_kw_nf[i] + load3.P_kw_nf[i] )))
 
-        gridpower = grid.power_request(i, load.P_kw_nf[i] - pvpower - battpower)
+        grid1.power_request(i, load1.P_kw_nf[i] - inv1)
+        grid2.power_request(i, load2.P_kw_nf[i] - inv2)
+        grid3.power_request(i, load3.P_kw_nf[i] - inv3)
+
 
 
         # check energy balance
-        if np.absolute((load.P_kw_nf[i] - pv.P_kw_nf[i] - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid.P_kw_nf.item(i))) > 0.001:
+        if np.absolute((load1.P_kw_nf[i] + load2.P_kw_nf[i] + load3.P_kw_nf[i] - pv.P_kw_nf[i] - bat.P_kw_nf[i] - gen.P_kw_nf[i] - grid1.P_kw_nf.item(i) - grid2.P_kw_nf.item(i) - grid3.P_kw_nf.item(i))) > 0.001:
             err.energy_balance()
 
     # vectors
@@ -1217,16 +1311,19 @@ def simulate_entech(m_0,L):
         filename = output_dir + '/vectors_{}.csv'.format(filename_param)
         with open(filename, 'w') as file:
             output = csv.writer(file)
-            output.writerow(['time','load','pv','b_kw','b_soc','gen','grid','diff'])
+            output.writerow(['time','load1','load2','load3','pv','b_kw','b_soc','gen','grid1','grid2','grid3','diff'])
             for i in range(L):
-                l=load.P_kw_nf.item(i)
+                l1=load1.P_kw_nf.item(i)
+                l2=load2.P_kw_nf.item(i)
+                l3=load3.P_kw_nf.item(i)
                 p=pv.P_kw_nf.item(i)
                 b=bat.P_kw_nf.item(i)
                 s=bat.soc_nf.item(i)
                 g=gen.P_kw_nf.item(i)
-                G=grid.P_kw_nf.item(i)
-                d=l-p-b-g-G
-                output.writerow([load.datetime[i],l,p,b,s,g,G,d])
+                G1=grid1.P_kw_nf.item(i)
+                G2=grid2.P_kw_nf.item(i)
+                G3=grid3.P_kw_nf.item(i)
+                output.writerow([load1.datetime[i],l1,l2,l3,p,b,s,g,G1,G2,G3])
 
     # print a single vector
     if batt_vector_print:
@@ -1241,18 +1338,22 @@ def simulate_entech(m_0,L):
         sum_batdis = np.sum(np.clip(bat.P_kw_nf,0,10000))/4
         sum_batchg = np.sum(-1*np.clip(bat.P_kw_nf,-10000,0))/4
 
-        sum_load = np.sum(load.P_kw_nf)/4
+        sum_load1 = np.sum(load1.P_kw_nf)/4
+        sum_load2 = np.sum(load2.P_kw_nf)/4
+        sum_load3 = np.sum(load3.P_kw_nf)/4
         sum_pv = np.sum(pv.P_kw_nf)/4
-        sum_grid = np.sum(grid.P_kw_nf)/4
+        sum_grid1 = np.sum(grid1.P_kw_nf)/4
+        sum_grid2 = np.sum(grid2.P_kw_nf)/4
+        sum_grid3 = np.sum(grid3.P_kw_nf)/4
 
         soc_final = bat.soc_nf.item(L-1)
         delta_soc = bat.En_kwh * (1 - soc_final)
 
         max_grid = np.max(grid.P_kw_nf)
 
-        print('sum load: {:.0f}'.format(sum_load))
+        print('sum loads: 1={:.0f} 2={:.0f} 3={:.0f}'.format(sum_load1,sum_load2,sum_load3))
         print('sum pv: {:.0f}'.format(sum_pv))
-        print('sum grid: {:.0f}'.format(sum_grid))
+        print('sum grids: 1={:.0f} 2={:.0f} 3={:.0f}'.format(sum_grid1,sum_grid2,sum_grid3))
 
         print('sum bat dis: {:.0f}'.format(sum_batdis))
         print('sum bat chg: {:.0f}'.format(sum_batchg))
@@ -1268,15 +1369,23 @@ def simulate_entech(m_0,L):
         np.set_printoptions(precision=1,suppress=True)
 
         # output some stats
-        peak_demand = np.max(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
-        peak_demand_index = np.argmax(load.P_kw_nf - pv.P_kw_nf - bat.P_kw_nf)
+        peak_demand1 = np.max(grid1.P_kw_nf)
+        peak_demand2 = np.max(grid2.P_kw_nf)
+        peak_demand3 = np.max(grid3.P_kw_nf)
 
-        print('\nperiod start: {}'.format(load.datetime[0]))
-        print('period end:   {}'.format(load.datetime[-1]))
-        print('period peak demand [kW]: {:.1f}'.format(peak_demand))
-        print('period peak demand time: {}'.format(load.datetime[peak_demand_index]))
-        print('period peak demand index [tstep]: {:d}'.format(peak_demand_index))
+        peak_demand1_index = np.argmax(grid1.P_kw_nf)
+        peak_demand2_index = np.argmax(grid2.P_kw_nf)
+        peak_demand3_index = np.argmax(grid3.P_kw_nf)
+
+        print('\nperiod start: {}'.format(load1.datetime[0]))
+        print('period end:   {}'.format(load1.datetime[-1]))
+        print('period peak demand [kW]: {:.1f} {:.1f} {:.1f}'.format(peak_demand1, peak_demand2, peak_demand3))
+        print('period peak demand time: {} {} {}'.format(grid1.datetime[peak_demand1_index],grid2.datetime[peak_demand2_index],grid3.datetime[peak_demand3_index]))
+        print('period peak demand index [tstep]: {:d} {:d} {:d}'.format(peak_demand1_index, peak_demand2_index, peak_demand3_index))
         print('\ndemand targets [kW]: \n{}'.format(demand_targets.monthly))
+
+
+        # to do: fix the rest of this function for 3 loads and 3 grids
 
         prev_month = 1
         demand_ratchet = [0] * demand_targets.tou_levels
@@ -1600,6 +1709,11 @@ for load_scaling_factor in load_scale_vector:
                     results =   DataClass(3.*60.*60., runs)
                     dispatch_previous =  DataClass(15.*60., 2*46333)  # timestep[s]
                     import_load_data(site, load_stats)
+                    if sim == 'ue':
+                        load1_all = DataClass(15.*60., 2*46333)  # timestep[s]
+                        load2_all = DataClass(15.*60., 2*46333)  # timestep[s]
+                        load3_all = DataClass(15.*60., 2*46333)  # timestep[s]
+                        import_load_data_ue(site,load_stats)
                     import_pv_data(site)
 
 
@@ -1629,10 +1743,19 @@ for load_scaling_factor in load_scale_vector:
                         # wish we could pre-allocate these, but it was causing a bug
                         #   even after calling .clear() on everything
                         load =  DataClass(  15.*60.,L)                 # timestep[s]
+                        if sim == 'ue':
+                            load1 =  DataClass(  15.*60.,L)                 # timestep[s]
+                            load2 =  DataClass(  15.*60.,L)                 # timestep[s]
+                            load3 =  DataClass(  15.*60.,L)                 # timestep[s]
                         pv =    PVClass(  15.*60.,L)                   # timestep[s]
                         gen =   GenClass(   gen_power,gen_fuelA,gen_fuelB,gen_tank,15.*60.,L)   # kW, fuel A, fuel B, tank[gal], tstep[s]
                         bat =   BattClass(  batt_power,batt_energy,1,15*60.,L)      # kW, kWh, soc0 tstep[s]
                         grid =  GridClass(  1000.,L)                    # kW
+                        if sim == 'ue':
+                            grid1 =  GridClass(  1000.,L)                    # kW
+                            grid2 =  GridClass(  1000.,L)                    # kW
+                            grid3 =  GridClass(  1000.,L)                    # kW
+
                         microgrid = MicrogridClass()
 
                         # timestamp this data point
@@ -1768,7 +1891,181 @@ if superloop_enabled:
             output.writerow([load_scale_vals[i],pv_scale_vals[i],batt_energy_vals[i], batt_power_vals[i], batt_hrs_vals[i], gen_power_vals[i], conf_72h[i],conf_336h[i],min_ttff[i],avg_ttff[i],max_ttff[i]])
 
 # plots
-if plots_on:
+if plots_on and (sim == 'ue'):
+
+    #
+    # 1
+    #
+
+    fig1, ax1 = plt.subplots(figsize=(20,8.5))
+    ax2 = ax1.twinx()
+
+    # main vectors
+    t = np.arange(1., L+1., 1.)
+    p = pv.P_kw_nf
+    l1 = load1.P_kw_nf
+    #l2 = load2.P_kw_nf
+    #l3 = load3.P_kw_nf
+    g = gen.P_kw_nf
+    d = np.clip(bat.P_kw_nf,0,10000)
+    c = -1*np.clip(bat.P_kw_nf,-10000,0)
+    G1 = np.clip(grid1.P_kw_nf,0,10000)
+
+    # consider putting in a horizontal demand target line
+    if peak_shaving:# and debug_demand:
+        m1 = load1.datetime[i].month
+        ax1.plot([1, L], [demand_targets.monthly[m1-1], demand_targets.monthly[m1-1]], 'r', label='demand target', linewidth=.5)
+
+    # plot load and soc
+    ax1.plot(t, l1,           'k',    label='load1', linewidth=0.5)
+    ax1.plot(t, l1+c,         'k--',  label='load1 + batt charge', linewidth=0.5)
+    ax2.plot(t, bat.soc_nf,  'b:',   label='soc', linewidth=0.5)
+
+    # area plots
+    if plot_pv_first and grid_online:
+        ax1.plot(t, G1,       'r--',  label='grid import',linewidth=1.)
+        ax1.fill_between(t, 0,      p,     facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,   facecolor='lightblue',   label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+G1, facecolor='pink',        label='grid1')#, interpolate=True)
+
+    # area plots
+    elif plot_pv_first and not grid_online:
+        ax1.fill_between(t, 0,      p,          facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,        facecolor='lightblue',  label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+g,      facecolor='lightgreen', label='gen')#, interpolate=True)
+
+    # area plots
+    elif plot_grid_first and grid_online:
+        ax1.fill_between(t, 0,       G1,     facecolor='pink', label='grid')#, interpolate=True)
+        ax1.fill_between(t, G1,       G1+p,   facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, G1+p,     G1+p+d, facecolor='lightblue', label='batt discharge')#, interpolate=True)
+
+    ax1.set_xlabel('timestep')
+    ax1.set_ylabel('power [kW]')
+    ax2.set_ylabel('SOC')
+
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+    ax1.set_xlim(1,L)
+    ax1.set_ylim(0,1.1*np.max([p,l1,g,d,c,G1]))
+    ax2.set_ylim(0,1.1)
+
+    #
+    # 2
+    #
+
+    fig2, ax1 = plt.subplots(figsize=(20,8.5))
+    ax2 = ax1.twinx()
+
+    # main vectors
+    t = np.arange(1., L+1., 1.)
+    p = pv.P_kw_nf
+    l2 = load2.P_kw_nf
+    g = gen.P_kw_nf
+    d = np.clip(bat.P_kw_nf,0,10000)
+    c = -1*np.clip(bat.P_kw_nf,-10000,0)
+    G2 = np.clip(grid2.P_kw_nf,0,10000)
+
+    # consider putting in a horizontal demand target line
+    if peak_shaving:# and debug_demand:
+        m2 = load2.datetime[i].month
+        ax1.plot([1, L], [demand_targets.monthly[m2-1], demand_targets.monthly[m2-1]], 'r', label='demand target', linewidth=.5)
+
+    # plot load and soc
+    ax1.plot(t, l2,           'k',    label='load2', linewidth=0.5)
+    ax1.plot(t, l2+c,         'k--',  label='load2 + batt charge', linewidth=0.5)
+    ax2.plot(t, bat.soc_nf,  'b:',   label='soc', linewidth=0.5)
+
+    # area plots
+    if plot_pv_first and grid_online:
+        ax1.plot(t, G2,       'r--',  label='grid2 import',linewidth=1.)
+        ax1.fill_between(t, 0,      p,     facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,   facecolor='lightblue',   label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+G2, facecolor='pink',        label='grid2')#, interpolate=True)
+
+    # area plots
+    elif plot_pv_first and not grid_online:
+        ax1.fill_between(t, 0,      p,          facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,        facecolor='lightblue',  label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+g,      facecolor='lightgreen', label='gen')#, interpolate=True)
+
+    # area plots
+    elif plot_grid_first and grid_online:
+        ax1.fill_between(t, 0,       G2,     facecolor='pink', label='grid2')#, interpolate=True)
+        ax1.fill_between(t, G2,       G2+p,   facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, G2+p,     G2+p+d, facecolor='lightblue', label='batt discharge')#, interpolate=True)
+
+    ax1.set_xlabel('timestep')
+    ax1.set_ylabel('power [kW]')
+    ax2.set_ylabel('SOC')
+
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+    ax1.set_xlim(1,L)
+    ax1.set_ylim(0,1.1*np.max([p,l2,g,d,c,G2]))
+    ax2.set_ylim(0,1.1)
+
+
+    #
+    # 3
+    #
+
+    fig2, ax1 = plt.subplots(figsize=(20,8.5))
+    ax2 = ax1.twinx()
+
+    # main vectors
+    t = np.arange(1., L+1., 1.)
+    p = pv.P_kw_nf
+    l3 = load3.P_kw_nf
+    g = gen.P_kw_nf
+    d = np.clip(bat.P_kw_nf,0,10000)
+    c = -1*np.clip(bat.P_kw_nf,-10000,0)
+    G3 = np.clip(grid3.P_kw_nf,0,10000)
+
+    # consider putting in a horizontal demand target line
+    if peak_shaving:# and debug_demand:
+        m3 = load3.datetime[i].month
+        ax1.plot([1, L], [demand_targets.monthly[m3-1], demand_targets.monthly[m3-1]], 'r', label='demand target', linewidth=.5)
+
+    # plot load and soc
+    ax1.plot(t, l3,           'k',    label='load3', linewidth=0.5)
+    ax1.plot(t, l3+c,         'k--',  label='load3 + batt charge', linewidth=0.5)
+    ax2.plot(t, bat.soc_nf,  'b:',   label='soc', linewidth=0.5)
+
+    # area plots
+    if plot_pv_first and grid_online:
+        ax1.plot(t, G3,       'r--',  label='grid3 import',linewidth=1.)
+        ax1.fill_between(t, 0,      p,     facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,   facecolor='lightblue',   label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+G3, facecolor='pink',        label='grid3')#, interpolate=True)
+
+    # area plots
+    elif plot_pv_first and not grid_online:
+        ax1.fill_between(t, 0,      p,          facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, p,      p+d,        facecolor='lightblue',  label='batt discharge')#, interpolate=True)
+        ax1.fill_between(t, p+d,    p+d+g,      facecolor='lightgreen', label='gen')#, interpolate=True)
+
+    # area plots
+    elif plot_grid_first and grid_online:
+        ax1.fill_between(t, 0,       G3,     facecolor='pink', label='grid3')#, interpolate=True)
+        ax1.fill_between(t, G3,       G2+p,   facecolor='lightyellow', label='pv')#, interpolate=True)
+        ax1.fill_between(t, G3+p,     G3+p+d, facecolor='lightblue', label='batt discharge')#, interpolate=True)
+
+    ax1.set_xlabel('timestep')
+    ax1.set_ylabel('power [kW]')
+    ax2.set_ylabel('SOC')
+
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+    ax1.set_xlim(1,L)
+    ax1.set_ylim(0,1.1*np.max([p,l3,g,d,c,G3]))
+    ax2.set_ylim(0,1.1)
+
+
+
+    plt.show()
+
+elif plots_on:
     #plt.style.use('dark_background')
     #plt.rcParams['axes.prop_cycle']
 
